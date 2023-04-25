@@ -153,7 +153,6 @@ class Worker:
                 if data is None: 
                     self.accept_wrapper() 
                 elif mask & selectors.EVENT_READ: 
-                    # stupid fathead
                     for k, v in self._recv_n_args(sock, 0, True)[0]: 
                         if k not in self.state: 
                             self.state[k] = []
