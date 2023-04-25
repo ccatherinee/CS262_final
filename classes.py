@@ -2,9 +2,15 @@ import time
 from constants import * 
 import pickle 
 from dill.source import getsource 
+import selectors
+import socket 
+import struct
+import time
+from multiprocessing import Process
+import types
 
 class MRJob: 
-    def __init__(self, n=5): 
+    def __init__(self, n=2): 
         # create an instance of LoadBalancer 
         self.load_balancer = LoadBalancer(n)
 
@@ -24,15 +30,18 @@ class LoadBalancer:
         # spawn up n servers 
         self.worker_states = {}
         self.worker_locs = []
+        # processes = []
         for port in range(WORKER_PORT_START, WORKER_PORT_START + n): 
-            worker = Worker("", port)
+            worker_process = Process(target=Worker().communication_with_lb, args=("",port,))
+            worker_process.start() 
+            time.sleep(1)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # may need to sleep here 
             sock.connect(("", port))
+            print("lb connecting to ", port)
             self.sel.register(sock, selectors.EVENT_READ)
 
             self.worker_states[sock] = {}
-            self.worker_ports.append(("", port))
+            self.worker_locs.append(("", port))
 
     def split(self, a, n):
         k, m = divmod(len(a), n)
@@ -44,31 +53,37 @@ class LoadBalancer:
         for sock in self.worker_states.keys(): 
             self.worker_states[sock] = inputs[idx]
             idx += 1
-        for sock, input_ in self.worker_states: 
+        for sock, input_ in self.worker_states.items(): 
+            print(input_, "pigeon")
             # pack the opcode MAP, pack pickled input_, pack mapper function 
-            to_send = self._pack_n_args(MAP, pickle.dumps(input_), getsource(mapper))
+            mapper_str = getsource(mapper)
+            mapper_str = mapper_str.strip() 
+            to_send = self._pack_n_args(MAP, [mapper_str], pickle.dumps(input_))
             sock.sendall(to_send)
         self.wait_until_confirmation(MAP)
 
     def shuffle_setup(self): 
-        def hash_func(key, worker_ports): 
-            n = len(worker_ports)
-            return worker_ports[hash(key) % n]
+        """
+        def hash_func(key, worker_locs): 
+            n = len(worker_locs)
+            return worker_locs[hash(key) % n] """
         # send it over to the worker nodes 
         for sock in self.worker_states.keys(): 
-            to_send = self.pack_n_args(SHUFFLE, pickle.dumps(self.worker_ports), getsource(hash_func))
+            to_send = self._pack_n_args(SHUFFLE, [], pickle.dumps(self.worker_locs))
             sock.sendall(to_send)
         self.wait_until_confirmation(SHUFFLE)
 
     def reducer_setup(self, reducer): 
         # send op code and reducer over to the nodes in self.worker_states
         for sock in self.worker_states.keys(): 
-            to_send = self._pack_n_args(REDUCE, getsource(reducer))
+            reducer_str = getsource(reducer)
+            reducer_str = reducer_str.strip()
+            to_send = self._pack_n_args(REDUCE, [reducer_str])
             sock.sendall(to_send)
         self.wait_until_confirmation(REDUCE)
     
     def wait_until_confirmation(self, opcode): 
-        unconfirmed = self.worker_states.keys() 
+        unconfirmed = list(self.worker_states.keys())
         t_end = time.time() + 10                         
         while len(unconfirmed) > 0: 
             if time.time() < t_end: 
@@ -77,7 +92,7 @@ class LoadBalancer:
                     sock = key.fileobj
                     if sock in unconfirmed: 
                         temp = self._recvall(sock, 4)
-                        not_responded.remove(sock)
+                        unconfirmed.remove(sock)
                         print(temp, sock.getsockname())
 
     def run(self, inputs, mapper, reducer): 
@@ -86,10 +101,12 @@ class LoadBalancer:
         self.reducer_setup(reducer)
         # send back to client 
     
-    def _pack_n_args(self, opcode, args): 
+    def _pack_n_args(self, opcode, args, pickled=None): 
         to_send = struct.pack('>I', opcode)
         for arg in args: 
             to_send += struct.pack('>I', len(arg)) + arg.encode("utf-8")
+        if pickled: 
+            to_send += struct.pack('>I', len(pickled)) + pickled
         return to_send 
     
     def _recvall(self, sock, n):
@@ -101,39 +118,30 @@ class LoadBalancer:
             data.extend(packet)
         return data 
 
-    def _recv_n_args(self, sock, n): 
+    def _recv_n_args(self, sock, n, pickled=None): 
         args = []
         for _ in range(n): 
             arg_len = struct.unpack('>I', self._recvall(sock, 4))[0]
             args.append(self._recvall(sock, arg_len).decode("utf-8", "strict"))
-        return args 
+        if pickled: 
+            pickle_len = struct.unpack('>I', self._recvall(sock, 4))[0]
+            raw_pickle = self._recvall(sock, pickle_len)
+            pickled_obj = pickle.loads(raw_pickle)
+            args.append(pickled_obj)
+        return args
 
 class Worker: 
-    def __init__(self, host, port): 
-        # create a listening socket 
-        lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        lsock.bind((host, port))
-        lsock.listen()
-        lsock.setblocking(False)
-        self.lsock = lsock 
-
-        # register 
-        self.sel = selectors.DefaultSelector
-        self.workers_sel = selectors.DefaultSelector
-        self.sel.register(lsock, selectors.EVENT_READ, data=None)
-
-        self.state = None
-        # iterate through it, put in {port: (k, v)}
-        self.shuffle_state = {}
-        self.shuffling_state = {}
+    def __init__(self): 
+        pass
 
     def accept_wrapper(self): 
         # register the selector for loadbalancer as read only and register the selector for the other workers as read and write
-        conn, addr = self.sock.accept()
+        conn, addr = self.lsock.accept()
         conn.setblocking(False)
         if self.state == None: 
             data = types.SimpleNamespace(addr=addr)
             self.sel.register(conn, selectors.EVENT_READ, data=data)
+            print("Accepting the lb")
         else: 
             data = types.SimpleNamespace(addr=addr, outb=b"")
             self.workers_sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
@@ -146,7 +154,7 @@ class Worker:
                 if data is None: 
                     self.accept_wrapper() 
                 elif mask & selectors.EVENT_READ: 
-                    for k, v in self._recv_n_args(sock, 1): 
+                    for k, v in self._recv_n_args(sock, 0, True): 
                         if k not in self.state: 
                             self.state[k] = []
                         self.state[k] += v 
@@ -154,44 +162,68 @@ class Worker:
                     sock.sendall(data.outb)
                     data.outb = b""
 
-    def communication_with_lb(self): 
+    def communication_with_lb(self, host, port): 
+        # create a listening socket 
+        lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        lsock.bind((host, port))
+        lsock.listen()
+        lsock.setblocking(False)
+        self.lsock = lsock 
+
+        print("listening at ", port)
+        # register 
+        self.sel = selectors.DefaultSelector()
+        self.workers_sel = selectors.DefaultSelector()
+        self.sel.register(lsock, selectors.EVENT_READ, data=None)
+
+        self.state = None
+        # iterate through it, put in {port: (k, v)}
+        self.shuffle_state = {}
+        self.shuffling_state = {}
+        
         while True: 
             events = self.sel.select(timeout=None)
             for key, mask in events: 
                 if key.data is None: 
                     self.accept_wrapper()
                 else: 
-                    self.service_connection_with_lb(key, mas)
+                    self.service_connection_with_lb(key, mask)
 
     def service_connection_with_lb(self, key, mask): 
-        sock, data = key.fileobj
+        sock, data = key.fileobj, key.data
         if mask & selectors.EVENT_READ: 
             raw_opcode = self._recvall(sock, 4)
             if not raw_opcode: return 
             opcode = struct.unpack('>I', raw_opcode)[0]
             if opcode == MAP: 
-                input_, mapper = self._recv_n_args(sock, 2)
-                exec mapper 
+                self.state = {}
+                mapper_, input_ = self._recv_n_args(sock, 1, True)
+                ldict = {}
+                exec(mapper_, globals(), ldict)
+                mapper = "mapper"
                 for k1, v1 in input_: 
-                    for k2, v2 in mapper(k1, v1):
+                    for k2, v2 in ldict[mapper](None, k1, v1):
                         if not k2 in self.state: self.state[k2] = []
                         self.state[k2].append(v2)
-                to_send = self._pack_n_args(MAP_CONFIRM, pickle.dumps(self.state))
+                to_send = self._pack_n_args(MAP_CONFIRM, [], pickle.dumps(self.state))
                 sock.sendall(to_send)
                 # {"the": [1, 1]}
             elif opcode == SHUFFLE: 
-                worker_ports, hash_func = self.recv_n_args(sock, 2)
-                for k, v in self.state: 
+                worker_locs = self._recv_n_args(sock, 0, True)[0]
+                for k, v in self.state.items(): 
                     self.shuffle_state[k] = v
                 self.state = {}
-                for k, v in self.shuffle_state: 
-                    loc = hash_func[k]
+                for k, v in self.shuffle_state.items(): 
+                    n = len(worker_locs)
+                    loc = worker_locs[hash(k) % n] 
+                    # loc = hash_func[k]
                     if loc not in self.shuffling_state: 
                         self.shuffling_state[loc] = ([], False)
                     self.shuffling_state[loc][0].append((k, v))
                 self.shuffle_state = {}
                 # info consists of ([(k, [1,1]) (k, [1])], BOOL)
-                for loc, info in self.shuffling_state: 
+                for loc, info in self.shuffling_state.items(): 
+                    print(info, "resort")
                     if info[0] == False: 
                         # create a new socket, register it in self.worker_sel for write events and put info[0] into data.outb
                         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -199,14 +231,16 @@ class Worker:
                         outb = self._pack_n_args(info[1])
                         data = types.SimpleNamespace(addr=addr, outb=outb)
                         self.workers_sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
-                to_send = self._pack_n_args(SHUFFLE_CONFIRM)
+                to_send = self._pack_n_args(SHUFFLE_CONFIRM, [])
                 sock.sendall(to_send)
             elif opcode == REDUCE: 
-                reducer = self.self._recv_n_args(sock, 1)
-                exec reducer
+                reducer_ = self._recv_n_args(sock, 1)[0]
+                ldict = {}
+                exec(reducer_, globals(), ldict)
+                reducer = "reducer"
                 for k, v in self.state: 
-                    self.state[k] = reducer(v)
-                to_send = self._pack_n_args(REDUCE_CONFIRM, pickle.dumps(self.state))
+                    self.state[k] = ldict[reducer](None, k, v)
+                to_send = self._pack_n_args(REDUCE_CONFIRM, [], pickle.dumps(self.state))
                 sock.sendall(to_send)
                 """
                 FAILURE HANDLING: 
@@ -220,10 +254,12 @@ class Worker:
             elif opcode = SHUFFLE_STATE_REQUEST: 
                 send over self.state """
 
-    def _pack_n_args(self, opcode, args): 
+    def _pack_n_args(self, opcode, args, pickled=None): 
         to_send = struct.pack('>I', opcode)
         for arg in args: 
             to_send += struct.pack('>I', len(arg)) + arg.encode("utf-8")
+        if pickled: 
+            to_send += struct.pack('>I', len(pickled)) + pickled
         return to_send 
 
     def _recvall(self, sock, n): 
@@ -235,9 +271,14 @@ class Worker:
             data.extend(packet) 
         return data 
     
-    def _recv_n_args(self, sock, n): 
+    def _recv_n_args(self, sock, n, pickled=None): 
         args = []
         for _ in range(n): 
             arg_len = struct.unpack('>I', self._recvall(sock, 4))[0]
             args.append(self._recvall(sock, arg_len).decode("utf-8", "strict"))
-        return args 
+        if pickled: 
+            pickle_len = struct.unpack('>I', self._recvall(sock, 4))[0]
+            raw_pickle = self._recvall(sock, pickle_len)
+            pickled_obj = pickle.loads(raw_pickle)
+            args.append(pickled_obj)
+        return args
