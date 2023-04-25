@@ -8,6 +8,7 @@ import struct
 import time
 from multiprocessing import Process
 import types
+import threading
 
 class MRJob: 
     def __init__(self, n=2): 
@@ -32,8 +33,8 @@ class LoadBalancer:
         self.worker_locs = []
         # processes = []
         for port in range(WORKER_PORT_START, WORKER_PORT_START + n): 
-            worker_process = Process(target=Worker().communication_with_lb, args=("",port,))
-            worker_process.start() 
+            worker_process1 = Process(target=Worker().communication_with_lb, args=("",port,))
+            worker_process1.start() 
             time.sleep(1)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(("", port))
@@ -54,7 +55,6 @@ class LoadBalancer:
             self.worker_states[sock] = inputs[idx]
             idx += 1
         for sock, input_ in self.worker_states.items(): 
-            print(input_, "pigeon")
             # pack the opcode MAP, pack pickled input_, pack mapper function 
             mapper_str = getsource(mapper)
             mapper_str = mapper_str.strip() 
@@ -144,7 +144,7 @@ class Worker:
             print("Accepting the lb")
         else: 
             data = types.SimpleNamespace(addr=addr, outb=b"")
-            self.workers_sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
+            self.workers_sel.register(conn, selectors.EVENT_READ, data=data)
 
     def communication_with_workers(self): 
         while True: 
@@ -154,7 +154,8 @@ class Worker:
                 if data is None: 
                     self.accept_wrapper() 
                 elif mask & selectors.EVENT_READ: 
-                    for k, v in self._recv_n_args(sock, 0, True): 
+                    # stupid fathead
+                    for k, v in self._recv_n_args(sock, 0, True)[0]: 
                         if k not in self.state: 
                             self.state[k] = []
                         self.state[k] += v 
@@ -176,6 +177,8 @@ class Worker:
         self.workers_sel = selectors.DefaultSelector()
         self.sel.register(lsock, selectors.EVENT_READ, data=None)
 
+        # run communication_with_workers thread 
+        threading.Thread(target=self.communication_with_workers).start()
         self.state = None
         # iterate through it, put in {port: (k, v)}
         self.shuffle_state = {}
@@ -215,22 +218,25 @@ class Worker:
                 self.state = {}
                 for k, v in self.shuffle_state.items(): 
                     n = len(worker_locs)
-                    loc = worker_locs[hash(k) % n] 
+                    loc = worker_locs[len(k) % n] 
                     # loc = hash_func[k]
                     if loc not in self.shuffling_state: 
                         self.shuffling_state[loc] = ([], False)
                     self.shuffling_state[loc][0].append((k, v))
                 self.shuffle_state = {}
+
+                #print(self.shuffling_state, "teabags")
                 # info consists of ([(k, [1,1]) (k, [1])], BOOL)
                 for loc, info in self.shuffling_state.items(): 
-                    print(info, "resort")
-                    if info[0] == False: 
+                    if info[1] == False: 
                         # create a new socket, register it in self.worker_sel for write events and put info[0] into data.outb
                         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         sock.connect((loc[0], loc[1]))
-                        outb = self._pack_n_args(info[1])
-                        data = types.SimpleNamespace(addr=addr, outb=outb)
-                        self.workers_sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
+                        #print(loc, info[0], "butterfingersquash")
+                        outb = self._pack_n_args(None, [], pickle.dumps(info[0]))
+                        #print(outb, "hihihihi")
+                        data = types.SimpleNamespace(outb=outb)
+                        self.workers_sel.register(sock, selectors.EVENT_WRITE, data=data)
                 to_send = self._pack_n_args(SHUFFLE_CONFIRM, [])
                 sock.sendall(to_send)
             elif opcode == REDUCE: 
@@ -240,6 +246,7 @@ class Worker:
                 reducer = "reducer"
                 for k, v in self.state: 
                     self.state[k] = ldict[reducer](None, k, v)
+                print("cauliflower", self.state)
                 to_send = self._pack_n_args(REDUCE_CONFIRM, [], pickle.dumps(self.state))
                 sock.sendall(to_send)
                 """
@@ -255,10 +262,12 @@ class Worker:
                 send over self.state """
 
     def _pack_n_args(self, opcode, args, pickled=None): 
-        to_send = struct.pack('>I', opcode)
+        to_send = b""
+        if opcode != None: 
+            to_send = struct.pack('>I', opcode)
         for arg in args: 
             to_send += struct.pack('>I', len(arg)) + arg.encode("utf-8")
-        if pickled: 
+        if pickled != None: 
             to_send += struct.pack('>I', len(pickled)) + pickled
         return to_send 
 
@@ -276,9 +285,12 @@ class Worker:
         for _ in range(n): 
             arg_len = struct.unpack('>I', self._recvall(sock, 4))[0]
             args.append(self._recvall(sock, arg_len).decode("utf-8", "strict"))
-        if pickled: 
+        if pickled != None: 
             pickle_len = struct.unpack('>I', self._recvall(sock, 4))[0]
+            print(sock, "one flew over the cuckoo")
+            #print("porkinfesting2", pickle_len)
             raw_pickle = self._recvall(sock, pickle_len)
+            #print("chrysanthemum", raw_pickle)
             pickled_obj = pickle.loads(raw_pickle)
             args.append(pickled_obj)
         return args
