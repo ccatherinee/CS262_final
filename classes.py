@@ -16,10 +16,10 @@ class MRJob:
         self.load_balancer = LoadBalancer(n)
 
     def mapper(self, key, value): 
-        raise NotImplementedError
+        yield key, value
 
     def reducer(self, key, value): 
-        raise NotImplementedError
+        yield key, value
 
     def run(self, inputs): 
         self.load_balancer.run(inputs, self.mapper, self.reducer) 
@@ -48,6 +48,7 @@ class LoadBalancer:
         return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
 
     def mapper_setup(self, inputs, mapper): 
+        # splitting up the inputs into several chunks and putting it in self.worker_states 
         idx = 0 
         inputs = list(self.split(inputs, len(self.worker_states)))
         for sock in self.worker_states.keys(): 
@@ -59,7 +60,8 @@ class LoadBalancer:
             mapper_str = mapper_str.strip() 
             to_send = self._pack_n_args(MAP, [mapper_str], pickle.dumps(input_))
             sock.sendall(to_send)
-        time.sleep(2)
+        # time.sleep(2)
+        self.wait_until_confirmation(MAP)
 
     def shuffle_setup(self): 
         """
@@ -70,7 +72,8 @@ class LoadBalancer:
         for sock in self.worker_states.keys(): 
             to_send = self._pack_n_args(SHUFFLE, [], pickle.dumps(self.worker_locs))
             sock.sendall(to_send)
-        time.sleep(2)
+        # time.sleep(2)
+        self.wait_until_confirmation(SHUFFLE)
 
     def reducer_setup(self, reducer): 
         # send op code and reducer over to the nodes in self.worker_states
@@ -79,26 +82,40 @@ class LoadBalancer:
             reducer_str = reducer_str.strip()
             to_send = self._pack_n_args(REDUCE, [reducer_str])
             sock.sendall(to_send)
-        time.sleep(2)
+        # time.sleep(2)
+        self.wait_until_confirmation(REDUCE)
     
     def wait_until_confirmation(self, opcode): 
         unconfirmed = list(self.worker_states.keys())
-        t_end = time.time() + 20                         
+        t_end = time.time() + 5                       
         while len(unconfirmed) > 0: 
             if time.time() < t_end: 
                 events = self.sel.select(timeout=-1)
                 for key, _ in events: 
                     sock = key.fileobj
                     if sock in unconfirmed: 
-                        temp = self._recvall(sock, 4)
+                        raw_opcode = self._recvall(sock, 4)
+                        self.worker_confirmations(sock, raw_opcode)
                         unconfirmed.remove(sock)
-                        print(temp, sock.getsockname())
+            
+    def worker_confirmations(self, sock, raw_opcode):
+        opcode =  struct.unpack('>I', raw_opcode)[0]
+        if opcode == MAP_CONFIRM: 
+            new_state = self._recv_n_args(sock, 0, True)[0]
+            self.worker_states[sock] = new_state
+        elif opcode == REDUCE_CONFIRM: 
+            new_state = self._recv_n_args(sock, 0, True)[0]
+            self.worker_states[sock] = new_state
+        elif opcode == SHUFFLE_CONFIRM: 
+            pass
 
     def run(self, inputs, mapper, reducer): 
         self.mapper_setup(inputs, mapper) 
         self.shuffle_setup() 
         self.reducer_setup(reducer)
-        # send back to client 
+        for v in self.worker_states.values(): 
+            for k_, v_ in v.items(): 
+                print(k_, v_)
     
     def _pack_n_args(self, opcode, args, pickled=None): 
         to_send = struct.pack('>I', opcode)
@@ -207,6 +224,7 @@ class Worker:
                         if not k2 in self.state: self.state[k2] = []
                         self.state[k2].append(v2)
                 to_send = self._pack_n_args(MAP_CONFIRM, [], pickle.dumps(self.state))
+                # to_send = self._pack_n_args(MAP_CONFIRM, [])
                 sock.sendall(to_send)
                 # {"the": [1, 1]}
             elif opcode == SHUFFLE: 
@@ -215,14 +233,14 @@ class Worker:
                     self.shuffle_state[k] = v
                 self.state = {}
                 for k, v in self.shuffle_state.items(): 
+                    # apply the hash function to each of the keys 
                     n = len(worker_locs)
                     loc = worker_locs[len(k) % n] 
-                    # loc = hash_func[k]
+                    """ loc = hash_func[k] """
                     if loc not in self.shuffling_state: 
                         self.shuffling_state[loc] = ([], False)
                     self.shuffling_state[loc][0].append((k, v))
                 self.shuffle_state = {}
-
                 # info consists of ([(k, [1,1]) (k, [1])], BOOL)
                 for loc, info in self.shuffling_state.items(): 
                     if info[1] == False: 
@@ -235,7 +253,6 @@ class Worker:
                 to_send = self._pack_n_args(SHUFFLE_CONFIRM, [])
                 sock.sendall(to_send)
             elif opcode == REDUCE: 
-                print(self.state, "hot air balloon")
                 reducer_ = self._recv_n_args(sock, 1)[0]
                 ldict = {}
                 exec(reducer_, globals(), ldict)
@@ -243,8 +260,8 @@ class Worker:
                 for k, v in self.state.items(): 
                     for k2, v2 in ldict[reducer](None, k, v): 
                         self.state[k2] = v2
-                print(self.state, "permanent")
                 to_send = self._pack_n_args(REDUCE_CONFIRM, [], pickle.dumps(self.state))
+                # to_send = self._pack_n_args(REDUCE_CONFIRM, [])
                 sock.sendall(to_send)
                 """
                 FAILURE HANDLING: 
