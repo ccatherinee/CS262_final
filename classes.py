@@ -9,6 +9,7 @@ import time
 from multiprocessing import Process
 import types 
 import threading 
+import queue 
 
 class MRJob: 
     def __init__(self, n=2): 
@@ -28,53 +29,86 @@ class MasterNode:
         # selector which monitors connections to worker nodes 
         self.sel = selectors.DefaultSelector()
 
-        # maps socket to host, port and hash 
+        # maps host, port to (input, hash, data.outb, sock)
         self.worker_info = {}
-        # maps sock to input 
-        self.worker_inputs = {}
+        self.heartbeat_queue = queue.Queue()
+        self.worker_confirmations_queue = queue.Queue()
+
+        threading.Thread(target=self.monitor_workers_thread).start() 
 
         # spawn up n servers
         for offset in range(n): 
             port = WORKER_PORT_START + offset 
-            worker_process = Process(target=Worker("", port, offset).communication_with_master_node, args=())
+            worker_process = Process(target=Worker("", port, offset).run, args=())
             worker_process.start() 
 
             time.sleep(1)
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect(("", port))
             print("Master node connecting to ", port)
-            self.sel.register(sock, selectors.EVENT_READ)
+
+            data = types.SimpleNamespace(outb=[])
+            self.sel.register(sock, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
             
-            self.worker_info[sock] = (("", port), offset)
-            self.worker_inputs[sock] = []
+            self.worker_info[("", port)] = [None, offset, data.outb, sock]
 
     def split(self, a, n): 
         k, m = divmod(len(a), n)
         return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(n))
     
     def mapper_setup(self, inputs, mapper): 
-        # splitting up the inputs into several chunks and putting it in self.worker_inputs 
+        # splitting up the inputs into several chunks and putting it in self.worker_info
         idx = 0 
-        inputs = list(self.split(inputs, len(self.worker_inputs)))
-        for sock in self.worker_inputs.keys(): 
-            self.worker_inputs[sock] = inputs[idx]
+        inputs = list(self.split(inputs, len(self.worker_info)))
+        for k in self.worker_info.keys(): 
+            self.worker_info[k][0] = inputs[idx]
             idx += 1
-        for sock, input_ in self.worker_inputs.items(): 
+        for k in self.worker_info.keys(): 
             # pack opcode MAP, pickled input_, mapper function 
+            input_ = self.worker_info[k][0]
             mapper_str = getsource(mapper) 
             mapper_str = mapper_str.strip() 
             to_send = self._pack_n_args(MAP, [mapper_str], pickle.dumps(input_))
-            sock.sendall(to_send)
-        time.sleep(2)
+            self.worker_info[k][2].append(to_send)
+        self.wait_until_confirmation()
 
     def reducer_setup(self, reducer): 
-        for sock in self.worker_inputs.keys(): 
+        for k in self.worker_info.keys(): 
             reducer_str = getsource(reducer)
             reducer_str = reducer_str.strip() 
-            worker_locs = [self.worker_info[k][0] for k in self.worker_info.keys()]
+            worker_locs = list(self.worker_info.keys())
             to_send = self._pack_n_args(REDUCE, [reducer_str], pickle.dumps(worker_locs))
-            sock.sendall(to_send) 
-        time.sleep(2)
+            self.worker_info[k][2].append(to_send)
+        self.wait_until_confirmation()
+    
+    # def heartbeat_thread()
+    def monitor_workers_thread(self): 
+        while True: 
+            events = self.sel.select(timeout=None) 
+            for key, mask in events: 
+                sock, data = key.fileobj, key.data
+                if mask & selectors.EVENT_READ:
+                    raw_opcode = self._recvall(sock, 4)
+                    if not raw_opcode: return 
+                    opcode = struct.unpack('>I', raw_opcode)[0]
+                    loc = sock.getpeername()
+                    if opcode == HEARTBEAT_CONFIRM: 
+                        self.heartbeat_queue.put(loc)
+                    else: 
+                        self.worker_confirmations_queue.put(loc)
+                if (mask & selectors.EVENT_WRITE) and len(data.outb) > 0:
+                    while len(data.outb) > 0: 
+                        temp = data.outb.pop()
+                        sock.sendall(temp)
+
+    def wait_until_confirmation(self): 
+        unconfirmed = list(self.worker_info.keys())
+        while len(unconfirmed) > 0: 
+            loc = self.worker_confirmations_queue.get() 
+            if loc[0] == '127.0.0.1': 
+                loc = ('', loc[1])
+            if loc in unconfirmed: 
+                unconfirmed.remove(loc)
 
     def run(self, inputs, mapper, reducer): 
         self.mapper_setup(inputs, mapper) 
@@ -127,7 +161,7 @@ class Worker:
         conn.setblocking(False) 
         if self.state == None: 
             data = types.SimpleNamespace(addr=addr)
-            self.sel.register(conn, selectors.EVENT_READ, data=data)
+            self.sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
             self.master_node_conn = conn 
             print("Accepting the master node.")
         else: 
@@ -173,7 +207,7 @@ class Worker:
                     sock.sendall(data.outb)
                     data.outb = b""
 
-    def communication_with_master_node(self): 
+    def run(self): 
         lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         lsock.bind((self.host, self.port))
         lsock.listen() 
@@ -185,6 +219,13 @@ class Worker:
         self.workers_sel = selectors.DefaultSelector() 
         self.sel.register(lsock, selectors.EVENT_READ, data=None) 
 
+        self.mapreduce_queue = queue.Queue() 
+        self.heartbeat_queue = queue.Queue() 
+        self.write_to_master_node_queue = queue.Queue()
+
+        threading.Thread(target=self.mapreduce_thread).start()
+        # threading.Thread(target=self.heartbeat_thread).start()
+        
         while True: 
             events = self.sel.select(timeout=None)
             for key, mask in events:
@@ -197,9 +238,32 @@ class Worker:
             raw_opcode = self._recvall(sock, 4)
             if not raw_opcode: return 
             opcode = struct.unpack('>I', raw_opcode)[0]
+            if opcode == HEARTBEAT: 
+                self.heartbeat_queue.put(HEARTBEAT)
+            elif opcode == MAP: 
+                mapper_, input_ = self._recv_n_args(sock, 1, True)
+                self.mapreduce_queue.put((opcode, mapper_, input_))
+            elif opcode == REDUCE: 
+                reducer_, worker_locs = self._recv_n_args(sock, 1, True)
+                self.mapreduce_queue.put((opcode, reducer_, worker_locs))
+        if mask & selectors.EVENT_WRITE: 
+            while not self.write_to_master_node_queue.empty(): 
+                msg = self.write_to_master_node_queue.get() 
+                sock.sendall(msg)
+
+    def heartbeat_thread(self): 
+        while not self.heartbeat_queue.empty(): 
+            heartbeat_msg = self.heartbeat_queue.get()
+            outb = struct.pack('>I', HEARTBEAT_CONFIRM) 
+            self.write_to_master_node_queue.put(outb)
+
+    def mapreduce_thread(self): 
+        while True: 
+            msg = self.mapreduce_queue.get() 
+            opcode = msg[0]
             if opcode == MAP:
                 self.state = {}
-                mapper_, input_ = self._recv_n_args(sock, 1, True)
+                mapper_, input_ = msg[1], msg[2]
                 ldict = {}
                 exec(mapper_, globals(), ldict)
                 mapper = "mapper"
@@ -211,10 +275,9 @@ class Worker:
                             self.state[hash_] = []
                         self.state[hash_].append((k2, v2))
                 to_send = self._pack_n_args(MAP_CONFIRM, [])
-                sock.sendall(to_send)
+                self.write_to_master_node_queue.put(to_send)
             elif opcode == REDUCE: 
-                reducer_, self.worker_locs = self._recv_n_args(sock, 1, True)
-                self.reducer = reducer_
+                self.reducer, self.worker_locs = msg[1], msg[2]
                 # run communication_with_workers thread 
                 threading.Thread(target=self.communication_with_workers).start()
                 for (host, port) in self.worker_locs: 
