@@ -12,8 +12,9 @@ import threading
 import queue 
 from os import kill, getpid 
 from signal import SIGKILL
+
 class MRJob: 
-    def __init__(self, n=1): 
+    def __init__(self, n=4): 
         self.master_node = MasterNode(n) 
     
     def mapper(self, key, value): 
@@ -41,7 +42,7 @@ class MasterNode:
         # spawn up n servers
         for hash_ in range(n): 
             if hash_ == 0: 
-                self.start_worker("", WORKER_PORT_START + hash_, hash_, False)
+                self.start_worker("", WORKER_PORT_START + hash_, hash_, True)
             else: 
                 self.start_worker("", WORKER_PORT_START + hash_, hash_, False)
         threading.Thread(target=self.heartbeat_thread).start() 
@@ -54,12 +55,10 @@ class MasterNode:
         new_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         new_sock.connect((host, port))
         print("Master node connecting to ", port)
-
         
         data = types.SimpleNamespace(outb=[])
         # !!! register connection to worker 
         self.sel.register(new_sock, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
-        
         self.worker_info[("", port)] = [None, hash_, data.outb, new_sock]
 
     def split(self, a, n): 
@@ -89,7 +88,7 @@ class MasterNode:
                 outb = self.worker_info[loc][2]
                 outb.append(struct.pack('>I', HEARTBEAT))
                 try: 
-                    conf = self.heartbeat_queue.get(block=True, timeout=10)
+                    conf = self.heartbeat_queue.get(block=True, timeout=1)
                 except queue.Empty: 
                     dead_worker_info = self.worker_info[loc]
                     del self.worker_info[loc]
@@ -105,7 +104,11 @@ class MasterNode:
                 sock, data = key.fileobj, key.data
                 if mask & selectors.EVENT_READ:
                     raw_opcode = self._recvall(sock, 4)
-                    if not raw_opcode: return 
+                    # print(sock, raw_opcode, "TAYLOR SWIFT")
+                    if not raw_opcode: 
+                        self.sel.unregister(sock)
+                        sock.close() 
+                        continue
                     opcode = struct.unpack('>I', raw_opcode)[0]
                     loc = sock.getpeername()
                     if opcode == HEARTBEAT_CONFIRM: 
@@ -130,8 +133,6 @@ class MasterNode:
                 for (dead_host, dead_port), v in self.dead_workers.items(): 
                     unconfirmed.remove((dead_host, dead_port))
                     input_, hash_, outb, sock = v
-                    self.sel.unregister(sock)
-                    sock.close() 
 
                     new_host, new_port = "", dead_port + len(self.worker_info) + 1
                     new_loc = (new_host, new_port)
@@ -292,7 +293,6 @@ class Worker:
         sock, data = key.fileobj, key.data 
         if mask & selectors.EVENT_READ:  
             raw_opcode = self._recvall(sock, 4)
-            print("PRINCESS", self.port, raw_opcode, sock)
             if not raw_opcode: 
                 self.sel.unregister(sock)
                 sock.close() 
@@ -338,7 +338,7 @@ class Worker:
                 for k1, v1 in input_: 
                     for k2, v2 in ldict[mapper](None, k1, v1):
                         """ hard coding 2 right now """
-                        hash_ = len(k2) % 1
+                        hash_ = len(k2) % 4
                         if hash_ not in self.state: 
                             self.state[hash_] = []
                         self.state[hash_].append((k2, v2))
