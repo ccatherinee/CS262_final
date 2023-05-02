@@ -10,9 +10,10 @@ from multiprocessing import Process
 import types 
 import threading 
 import queue 
-
+from os import kill, getpid 
+from signal import SIGKILL
 class MRJob: 
-    def __init__(self, n=2): 
+    def __init__(self, n=1): 
         self.master_node = MasterNode(n) 
     
     def mapper(self, key, value): 
@@ -33,27 +34,33 @@ class MasterNode:
         self.worker_info = {}
         self.heartbeat_queue = queue.Queue()
         self.worker_confirmations_queue = queue.Queue()
-        self.dead_workers = []
+        self.dead_workers = {}
 
         threading.Thread(target=self.monitor_workers_thread).start() 
 
         # spawn up n servers
         for hash_ in range(n): 
-            self.start_worker("", WORKER_PORT_START + hash_, hash_)
+            if hash_ == 0: 
+                self.start_worker("", WORKER_PORT_START + hash_, hash_, False)
+            else: 
+                self.start_worker("", WORKER_PORT_START + hash_, hash_, False)
+        threading.Thread(target=self.heartbeat_thread).start() 
 
-    def start_worker(self, host, port, hash_): 
-        worker_process = Process(target=Worker(host, port, hash_).run, args=())
+    def start_worker(self, host, port, hash_, kill_process): 
+        worker_process = Process(target=Worker(host, port, hash_, kill_process).run, args=())
         worker_process.start() 
         time.sleep(1)
 
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((host, port))
+        new_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        new_sock.connect((host, port))
         print("Master node connecting to ", port)
 
-        data = types.SimpleNamespace(outb=[])
-        self.sel.register(sock, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
         
-        self.worker_info[("", port)] = [None, hash_, data.outb, sock]
+        data = types.SimpleNamespace(outb=[])
+        # !!! register connection to worker 
+        self.sel.register(new_sock, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
+        
+        self.worker_info[("", port)] = [None, hash_, data.outb, new_sock]
 
     def split(self, a, n): 
         k, m = divmod(len(a), n)
@@ -73,23 +80,28 @@ class MasterNode:
         to_send = self._pack_n_args(REDUCE, [reducer_str], pickle.dumps(worker_locs))
         self.worker_info[k][2].append(to_send)
 
-    """
+    
     def heartbeat_thread(self): 
         while True: 
-            for loc in self.worker_info.keys(): 
+            current = list(self.worker_info.keys())
+            for loc in current: 
                 starttime = time.time() 
                 outb = self.worker_info[loc][2]
-                outb.append(struct.pack('>I', HEARTBEAT_CONFIRM))
+                outb.append(struct.pack('>I', HEARTBEAT))
                 try: 
-                    conf = self.heartbeat_queue.get(block=1)
-                except Queue.Empty: 
-                    self.dead_workers.append(loc)
-                time.sleep(60.0 - ((time.time() - starttime) % 60.0))
-    """      
+                    conf = self.heartbeat_queue.get(block=True, timeout=10)
+                except queue.Empty: 
+                    dead_worker_info = self.worker_info[loc]
+                    del self.worker_info[loc]
+                    self.dead_workers[loc] = dead_worker_info
+                temp = time.time() - starttime 
+                if temp < 1: 
+                    time.sleep(1.0 - ((time.time() - starttime)))
+
     def monitor_workers_thread(self): 
         while True: 
             events = self.sel.select(timeout=None) 
-            for key, mask in events: 
+            for key, mask in events:
                 sock, data = key.fileobj, key.data
                 if mask & selectors.EVENT_READ:
                     raw_opcode = self._recvall(sock, 4)
@@ -104,45 +116,43 @@ class MasterNode:
                     while len(data.outb) > 0: 
                         temp = data.outb.pop()
                         sock.sendall(temp)
-    """
+    
     def wait_until_confirmation(self, current_opcode): 
         unconfirmed = list(self.worker_info.keys())
         while len(unconfirmed) > 0: 
-            opcode, loc = self.worker_confirmations_queue.get() 
-            if loc[0] == '127.0.0.1': 
-                loc = ('', loc[1])
-            if loc in unconfirmed and opcode == current_opcode: 
-                unconfirmed.remove(loc)
-            while len(self.dead_workers) > 0: 
-                # remove dead host, port from self.dead_workers and unconfirmed 
-                dead = self.dead_workers.pop() 
-                unconfirmed.remove(dead)
-                input_, hash_, outb, sock = self.worker_info[dead]
-                del self.worker_info[dead]
-                self.sel.unregister(sock)
-                sock.close() 
+            if not self.worker_confirmations_queue.empty(): 
+                opcode, loc = self.worker_confirmations_queue.get() 
+                if loc[0] == '127.0.0.1': 
+                    loc = ('', loc[1])
+                if loc in unconfirmed and opcode == current_opcode: 
+                    unconfirmed.remove(loc)
+            if len(self.dead_workers) > 0: 
+                for (dead_host, dead_port), v in self.dead_workers.items(): 
+                    unconfirmed.remove((dead_host, dead_port))
+                    input_, hash_, outb, sock = v
+                    self.sel.unregister(sock)
+                    sock.close() 
 
-                new_host, new_port = "", dead + len(self.worker_info) + 1
-                new_loc = (new_host, new_port)
-                self.start_worker(new_host, new_port, hash_)
-                unconfirmed.append(new_loc)
-                # if the current opcode is MAP_CONFIRM, then we're still on the mapping stage, so just send out the mapping 
-                self.mapper_setup(new_loc)
-                if current_opcode == REDUCE_CONFIRM: 
-                    self.reducer_setup(new_loc)
-                    # send UPDATE message
-                    for loc in self.worker_info.keys(): 
-                        if loc == new_loc: continue 
-                        to_send = self._pack_n_args(UPDATE, [], pickle.dumps([dead, new_loc]))
-                        self.worker_info[loc][2].append(to_send)
-        """
+                    new_host, new_port = "", dead_port + len(self.worker_info) + 1
+                    new_loc = (new_host, new_port)
+                    # !!! self.start_worker is called which means the connection is made and that connection registered in self.sel 
+                    self.start_worker(new_host, new_port, hash_, False)
+                    unconfirmed.append(new_loc)
+                    self.worker_info[new_loc][0] = input_
+                    # if the current opcode is MAP_CONFIRM, then we're still on the mapping stage, so just send out the mapping 
+                    self.mapper_setup(new_loc)
+                    if current_opcode == REDUCE_CONFIRM: 
+                        self.reducer_setup(new_loc)
+                        # send UPDATE message
+                        for loc in self.worker_info.keys(): 
+                            if loc == new_loc: continue 
+                            to_send = self._pack_n_args(UPDATE, [], pickle.dumps([dead, new_loc]))
+                            self.worker_info[loc][2].append(to_send)
+                self.dead_workers = {}
+                
     def run(self, inputs, mapper, reducer): 
         self.mapper, self.reducer = mapper, reducer 
-        # for each of them: do the mapper_setup and the reducer setup 
-        # splitting up the inputs into several chunks and putting it in self.worker_info
-        # start up a heartbeat thread over here? 
-        """ threading.Thread(target=self.heartbeat_thread).start() """
-
+        
         idx = 0 
         inputs = list(self.split(inputs, len(self.worker_info)))
         for k in self.worker_info.keys(): 
@@ -151,13 +161,11 @@ class MasterNode:
 
         for loc in self.worker_info.keys(): 
             self.mapper_setup(loc) 
-        # self.wait_until_confirmation(MAP_CONFIRM)
-        time.sleep(2)
+        self.wait_until_confirmation(MAP_CONFIRM)
 
         for loc in self.worker_info.keys(): 
             self.reducer_setup(loc) 
-        # self.wait_until_confirmation(REDUCE_CONFIRM)
-        time.sleep(2)
+        self.wait_until_confirmation(REDUCE_CONFIRM)
 
     def _recvall(self, sock, n):
         data = bytearray() 
@@ -189,7 +197,7 @@ class MasterNode:
         return args
 
 class Worker: 
-    def __init__(self, host, port, hash_): 
+    def __init__(self, host, port, hash_, kill_process): 
         # host and port the worker is at 
         self.host, self.port = host, port 
         # the hash this worker is responsible for 
@@ -199,6 +207,7 @@ class Worker:
         # maps (host, port) to the list of (k, v) you've received from that (host, port) 
         self.receive_state = {}
         self.reduce_state = {}
+        self.kill_process = kill_process
     
     def accept_wrapper(self): 
         conn, addr = self.lsock.accept() 
@@ -244,7 +253,6 @@ class Worker:
                             ldict = {}
                             exec(self.reducer, globals(), ldict)
                             reducer = "reducer"
-                            print(self.reduce_state, "popcorn")
                             for k1, v1 in self.reduce_state.items(): 
                                 for k2, v2 in ldict[reducer](None, k1, v1):
                                     print(k2, v2) 
@@ -271,7 +279,7 @@ class Worker:
         self.write_to_master_node_queue = queue.Queue()
 
         threading.Thread(target=self.mapreduce_thread).start()
-        # threading.Thread(target=self.heartbeat_thread).start()
+        threading.Thread(target=self.heartbeat_thread).start()
         threading.Thread(target=self.communication_with_workers).start()
         
         while True: 
@@ -284,7 +292,11 @@ class Worker:
         sock, data = key.fileobj, key.data 
         if mask & selectors.EVENT_READ:  
             raw_opcode = self._recvall(sock, 4)
-            if not raw_opcode: return 
+            print("PRINCESS", self.port, raw_opcode, sock)
+            if not raw_opcode: 
+                self.sel.unregister(sock)
+                sock.close() 
+                return 
             opcode = struct.unpack('>I', raw_opcode)[0]
             if opcode == HEARTBEAT: 
                 self.heartbeat_queue.put(HEARTBEAT)
@@ -294,27 +306,30 @@ class Worker:
             elif opcode == REDUCE: 
                 reducer_, worker_locs = self._recv_n_args(sock, 1, True)
                 self.mapreduce_queue.put((opcode, reducer_, worker_locs))
-            """
             elif opcode == UPDATE: 
                 locs = self._recv_n_args(sock, 0, True)
                 self.mapreduce_queue.put((opcode, locs))
-            """
+            
         if mask & selectors.EVENT_WRITE: 
             while not self.write_to_master_node_queue.empty(): 
                 msg = self.write_to_master_node_queue.get() 
                 sock.sendall(msg)
-    """
+    
     def heartbeat_thread(self): 
-        while not self.heartbeat_queue.empty(): 
-            heartbeat_msg = self.heartbeat_queue.get()
-            outb = struct.pack('>I', HEARTBEAT_CONFIRM) 
-            self.write_to_master_node_queue.put(outb)
-    """
+        while True: 
+            if not self.heartbeat_queue.empty(): 
+                heartbeat_msg = self.heartbeat_queue.get()
+                outb = struct.pack('>I', HEARTBEAT_CONFIRM) 
+                self.write_to_master_node_queue.put(outb)
+    
     def mapreduce_thread(self): 
         while True: 
             msg = self.mapreduce_queue.get() 
             opcode = msg[0]
             if opcode == MAP:
+                if self.kill_process: 
+                    pid = getpid()
+                    kill(pid, SIGKILL)
                 self.state = {}
                 mapper_, input_ = msg[1], msg[2]
                 ldict = {}
@@ -323,7 +338,7 @@ class Worker:
                 for k1, v1 in input_: 
                     for k2, v2 in ldict[mapper](None, k1, v1):
                         """ hard coding 2 right now """
-                        hash_ = len(k2) % 2
+                        hash_ = len(k2) % 1
                         if hash_ not in self.state: 
                             self.state[hash_] = []
                         self.state[hash_].append((k2, v2))
@@ -336,20 +351,24 @@ class Worker:
                     try: 
                         temp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         temp.connect((host, port))
-                        # self.receive_state maps (host, port) to the socket connection to worker at (host, port) and list of key, valuee pairs received from worker at (host, port) - instantiated to None 
                         self.receive_state[(host, port)] = [temp, None]
                     except (ConnectionRefusedError, TimeoutError): 
+                        print("Connection was refused from ", host, " and ", port)
                         continue 
+                time.sleep(1)
+                for worker_socket in [self.receive_state[k][0] for k in self.receive_state.keys()]: 
                     outb = struct.pack('>I', REQUEST) + struct.pack('>I', self.hash)
                     data = types.SimpleNamespace(outb=outb)
-                    self.workers_sel.register(temp, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
+                    self.workers_sel.register(worker_socket, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
             elif opcode == UPDATE: 
-                old, new = locs
+                old, new = msg[1]
+                """
                 if old in self.receive_state and self.receive_state[old][1] != None: 
                     val = self.receive_state[old]
                     del self.receive_state[old]
                     self.receive_state[new] = val 
-                elif old in self.receive_state: 
+                """
+                if old in self.receive_state and self.receive_state[old][1] == None: 
                     old_socket = self.receive_state[old]
                     self.workers_sel.unregister(old_socket)
                     old_socket.close() 
