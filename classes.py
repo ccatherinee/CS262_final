@@ -14,8 +14,8 @@ from os import kill, getpid
 from signal import SIGKILL
 
 class MRJob: 
-    def __init__(self, n=4): 
-        self.master_node = MasterNode(n) 
+    def __init__(self, n, WORKER_PORT_START): 
+        self.master_node = MasterNode(n, WORKER_PORT_START) 
     
     def mapper(self, key, value): 
         yield key, value 
@@ -27,7 +27,7 @@ class MRJob:
         self.master_node.run(inputs, self.mapper, self.reducer)
     
 class MasterNode: 
-    def __init__(self, n): 
+    def __init__(self, n, WORKER_PORT_START): 
         # selector which monitors connections to worker nodes 
         self.sel = selectors.DefaultSelector()
 
@@ -104,7 +104,6 @@ class MasterNode:
                 sock, data = key.fileobj, key.data
                 if mask & selectors.EVENT_READ:
                     raw_opcode = self._recvall(sock, 4)
-                    # print(sock, raw_opcode, "TAYLOR SWIFT")
                     if not raw_opcode: 
                         self.sel.unregister(sock)
                         sock.close() 
@@ -117,7 +116,7 @@ class MasterNode:
                         self.worker_confirmations_queue.put((opcode, loc))
                 if (mask & selectors.EVENT_WRITE) and len(data.outb) > 0:
                     while len(data.outb) > 0: 
-                        temp = data.outb.pop()
+                        temp = data.outb.pop(0)
                         sock.sendall(temp)
     
     def wait_until_confirmation(self, current_opcode): 
@@ -136,7 +135,6 @@ class MasterNode:
 
                     new_host, new_port = "", dead_port + len(self.worker_info) + 1
                     new_loc = (new_host, new_port)
-                    # !!! self.start_worker is called which means the connection is made and that connection registered in self.sel 
                     self.start_worker(new_host, new_port, hash_, False)
                     unconfirmed.append(new_loc)
                     self.worker_info[new_loc][0] = input_
@@ -147,7 +145,7 @@ class MasterNode:
                         # send UPDATE message
                         for loc in self.worker_info.keys(): 
                             if loc == new_loc: continue 
-                            to_send = self._pack_n_args(UPDATE, [], pickle.dumps([dead, new_loc]))
+                            to_send = self._pack_n_args(UPDATE, [], pickle.dumps([(dead_host, dead_port), new_loc]))
                             self.worker_info[loc][2].append(to_send)
                 self.dead_workers = {}
                 
@@ -171,9 +169,12 @@ class MasterNode:
     def _recvall(self, sock, n):
         data = bytearray() 
         while len(data) < n: 
-            packet = sock.recv(n - len(data))
-            if not packet:
-                return None 
+            try: 
+                packet = sock.recv(n - len(data))
+                if not packet:
+                    return None 
+            except ConnectionResetError: 
+                return None
             data.extend(packet)
         return data 
 
@@ -230,7 +231,10 @@ class Worker:
 
                 if mask & selectors.EVENT_READ:
                     raw_opcode = self._recvall(sock, 4)
-                    if not raw_opcode: return 
+                    if not raw_opcode: 
+                        self.workers_sel.unregister(sock)
+                        sock.close() 
+                        continue 
                     opcode = struct.unpack('>I', raw_opcode)[0]
                     if opcode == REQUEST: 
                         raw_hash = self._recvall(sock, 4)
@@ -244,7 +248,9 @@ class Worker:
                         host, port = sock.getpeername()
                         if host == '127.0.0.1': host = ''
                         self.receive_state[(host, port)][1] = keys_and_values 
-                        if not None in [self.receive_state[k][1] for k in self.receive_state.keys()]: 
+
+                        res = [self.receive_state[k][1] for k in self.receive_state.keys()]
+                        if not None in res: 
                             # self.receive_state: {(host, port): [socket, list]}
                             for _, list_ in self.receive_state.items(): 
                                 for k, v in list_[1]: 
@@ -259,9 +265,13 @@ class Worker:
                                     print(k2, v2) 
                             self.master_node_conn.sendall(struct.pack('>I', REDUCE_CONFIRM))
                         
-                elif (mask & selectors.EVENT_WRITE) and data.outb: 
-                    sock.sendall(data.outb)
-                    data.outb = b""
+                if (mask & selectors.EVENT_WRITE) and data.outb: 
+                    try: 
+                        sock.sendall(data.outb)
+                        data.outb = b""
+                    except OSError: 
+                        continue 
+
 
     def run(self): 
         lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -327,9 +337,6 @@ class Worker:
             msg = self.mapreduce_queue.get() 
             opcode = msg[0]
             if opcode == MAP:
-                if self.kill_process: 
-                    pid = getpid()
-                    kill(pid, SIGKILL)
                 self.state = {}
                 mapper_, input_ = msg[1], msg[2]
                 ldict = {}
@@ -338,13 +345,16 @@ class Worker:
                 for k1, v1 in input_: 
                     for k2, v2 in ldict[mapper](None, k1, v1):
                         """ hard coding 2 right now """
-                        hash_ = len(k2) % 4
+                        hash_ = len(k2) % 3
                         if hash_ not in self.state: 
                             self.state[hash_] = []
                         self.state[hash_].append((k2, v2))
                 to_send = self._pack_n_args(MAP_CONFIRM, [])
                 self.write_to_master_node_queue.put(to_send)
             elif opcode == REDUCE: 
+                if self.kill_process: 
+                    pid = getpid()
+                    kill(pid, SIGKILL)
                 self.reducer, self.worker_locs = msg[1], msg[2]
                 # run communication_with_workers thread 
                 for (host, port) in self.worker_locs: 
@@ -353,28 +363,29 @@ class Worker:
                         temp.connect((host, port))
                         self.receive_state[(host, port)] = [temp, None]
                     except (ConnectionRefusedError, TimeoutError): 
-                        print("Connection was refused from ", host, " and ", port)
+                        self.receive_state[(host, port)] = [None, None]
+                        print("Connection was refused from ", (host, port))
                         continue 
                 time.sleep(1)
+
                 for worker_socket in [self.receive_state[k][0] for k in self.receive_state.keys()]: 
-                    outb = struct.pack('>I', REQUEST) + struct.pack('>I', self.hash)
-                    data = types.SimpleNamespace(outb=outb)
-                    self.workers_sel.register(worker_socket, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
+                    if worker_socket != None: 
+                        outb = struct.pack('>I', REQUEST) + struct.pack('>I', self.hash)
+                        data = types.SimpleNamespace(outb=outb)
+                        try: 
+                            self.workers_sel.register(worker_socket, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
+                        except (OSError, ValueError): 
+                            continue 
+
             elif opcode == UPDATE: 
-                old, new = msg[1]
-                """
-                if old in self.receive_state and self.receive_state[old][1] != None: 
-                    val = self.receive_state[old]
-                    del self.receive_state[old]
-                    self.receive_state[new] = val 
-                """
+                old, new = msg[1][0]
                 if old in self.receive_state and self.receive_state[old][1] == None: 
-                    old_socket = self.receive_state[old]
-                    self.workers_sel.unregister(old_socket)
-                    old_socket.close() 
+                    # old_socket = self.receive_state[old]
+                    # self.workers_sel.unregister(old_socket)
+                    # old_socket.close() 
                     del self.receive_state[old]
                     try:
-                        temp = socket.socket(socket.AF_INET, socket.SOCKET_STREAM)
+                        temp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         temp.connect((new))
                         self.receive_state[new] = [temp, None]
                     except (ConnectionRefusedError, TimeoutError): 
@@ -387,9 +398,12 @@ class Worker:
     def _recvall(self, sock, n):
         data = bytearray() 
         while len(data) < n: 
-            packet = sock.recv(n - len(data))
-            if not packet:
-                return None 
+            try: 
+                packet = sock.recv(n - len(data))
+                if not packet:
+                    return None 
+            except ConnectionResetError: 
+                return None
             data.extend(packet)
         return data 
 
