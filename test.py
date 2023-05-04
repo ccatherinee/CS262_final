@@ -1,12 +1,16 @@
 from classes import MRJob
 import sys 
 
+
 class MRWordFreqCount(MRJob):
     def mapper(self, _, line):
         for word in line.split(' '):
             yield word.lower(), 1
+            
     def reducer(self, k, v): 
         yield k, sum(v)
+
+
 if __name__ == '__main__':
     blah = MRWordFreqCount(3, int(sys.argv[1]))
     # 0: 13123 and 1: 13124
