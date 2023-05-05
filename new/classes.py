@@ -13,6 +13,7 @@ import queue
 from os import kill, getpid 
 from signal import SIGKILL
 
+
 class MRJob: 
     def __init__(self, n, WORKER_PORT_START): 
         self.master_node = MasterNode(n, WORKER_PORT_START) 
@@ -26,6 +27,7 @@ class MRJob:
     def run(self, inputs): 
         self.master_node.run(inputs, self.mapper, self.reducer)
     
+
 class MasterNode: 
     def __init__(self, n, WORKER_PORT_START): 
         # selector which monitors connections to worker nodes 
@@ -83,19 +85,20 @@ class MasterNode:
     def heartbeat_thread(self): 
         while True: 
             current = list(self.worker_info.keys())
+            start_time = time.time() 
             for loc in current: 
-                starttime = time.time() 
                 outb = self.worker_info[loc][2]
                 outb.append(struct.pack('>I', HEARTBEAT))
                 try: 
-                    conf = self.heartbeat_queue.get(block=True, timeout=1)
+                    conf = self.heartbeat_queue.get(block=True, timeout=10)
                 except queue.Empty: 
+                    print(f"Master node detected worker node at {loc} is dead")
                     dead_worker_info = self.worker_info[loc]
                     del self.worker_info[loc]
                     self.dead_workers[loc] = dead_worker_info
-                temp = time.time() - starttime 
-                if temp < 1: 
-                    time.sleep(1.0 - ((time.time() - starttime)))
+            time_elapsed = time.time() - start_time 
+            if time_elapsed < 10: 
+                time.sleep(10 - time_elapsed)
 
     def monitor_workers_thread(self): 
         while True: 
@@ -198,6 +201,7 @@ class MasterNode:
             args.append(pickled_obj)
         return args
 
+
 class Worker: 
     def __init__(self, host, port, hash_, kill_process): 
         # host and port the worker is at 
@@ -280,7 +284,7 @@ class Worker:
         lsock.setblocking(False) 
         self.lsock = lsock 
 
-        print("Listening at ", self.port)
+        print("Worker node at ", self.port)
         self.sel = selectors.DefaultSelector() 
         self.workers_sel = selectors.DefaultSelector() 
         self.sel.register(lsock, selectors.EVENT_READ, data=None) 
