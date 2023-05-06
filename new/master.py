@@ -66,14 +66,14 @@ class MRJob:
     def accept_worker_connection(self): 
         conn, addr = self.lsock.accept() 
         conn.setblocking(False) # TODO: make non-blocking work on big datasets
-        data = types.SimpleNamespace(write_to_worker_queue=queue.Queue())
+        data = types.SimpleNamespace(write_to_worker_queue=queue.Queue(), worker_addr=addr)
         self.sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
         self.worker_connections[addr] = conn
         print(f"Master node accepted connection from worker node at {addr}")
 
     def service_worker_connection(self, key, mask):
         sock, data = key.fileobj, key.data
-        worker_addr = sock.getpeername()
+        worker_addr = data.worker_addr
         done = False # whether all tasks are complete
         if mask & selectors.EVENT_READ:
             raw_opcode = self._recvall(sock, 8)
