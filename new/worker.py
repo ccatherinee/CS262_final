@@ -15,6 +15,7 @@ from constants import *
 from collections import defaultdict
 
 
+# TODO: figure out blocking / non-blocking, sendall when haven't checked writable, etc.
 # TODO: fault tolerance, e.g., what happens when try to socket.connect to worker node that is down? 
 class Worker: 
     def __init__(self): 
@@ -52,7 +53,7 @@ class Worker:
         # selector for worker sockets once they have connected
         self.worker_sel = selectors.DefaultSelector()
 
-        self.master_sock.sendall(struct.pack('>I', REQUEST_TASK)) # request a map or reduce task from master node
+        self.write_to_master_queue.put(struct.pack('>I', REQUEST_TASK)) # request a map or reduce task from master node
 
         # thread for servicing other workers' requests to current worker
         threading.Thread(target=self.service_worker_connection, daemon=True).start() # daemon thread exits when main worker thread exits
@@ -72,7 +73,6 @@ class Worker:
         conn, addr = self.lsock.accept() 
         conn.setblocking(False) 
         self.worker_sel.register(conn, selectors.EVENT_READ, data=None)
-        print(f"Worker node listening at {self.lsock.getsockname()} accepted connection from worker node at {addr}")
 
     def service_worker_connection(self):
         while True:
@@ -118,6 +118,7 @@ class Worker:
             elif opcode == MAP_TASK:
                 self.map_task = struct.unpack('>I', self._recvall(self.master_sock, 4))[0] # get map task number
                 self.M = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
+                print(f"Worker node receiving map task {self.map_task}/{self.M} from master node")
                 self.R = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 mapper_func_len = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 mapper_func = self._recvall(self.master_sock, mapper_func_len).decode()
@@ -126,11 +127,13 @@ class Worker:
                 self.mapper = ldict["mapper"]
                 map_task_input_len = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 map_task_input = self._recvall(self.master_sock, map_task_input_len).decode()
+                print(f"Worker node received map task input file from master node")
                 threading.Thread(target=self.map_thread, args=(map_task_input,)).start() # start thread for map task
             elif opcode == REDUCE_TASK:
                 self.reduce_task = struct.unpack('>I', self._recvall(self.master_sock, 4))[0] # get reduce task number
                 self.M = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 self.R = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
+                print(f"Worker node receiving reduce task {self.reduce_task}/{self.R} from master node")
                 reducer_func_len = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 reducer_func = self._recvall(self.master_sock, reducer_func_len).decode()
                 ldict = {}
