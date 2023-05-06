@@ -12,6 +12,8 @@ User's map and reduce functions must return iterables / generators (e.g., a list
 
 Users must start user.py first before starting workers.
 
+User must set MASTER_HOST to their machine's IP address before running the MapReduce job.
+
 # Testing 
 python worker.py die_map makes that worker die during a map task.
 python worker.py die_reduce makes that worker die during a reduce task.
