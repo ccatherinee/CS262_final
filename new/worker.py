@@ -55,7 +55,7 @@ class Worker:
         self.master_sock.sendall(struct.pack('>I', REQUEST_TASK)) # request a map or reduce task from master node
 
         # thread for servicing other workers' requests to current worker
-        threading.Thread(target=self.service_worker_connection, daemon=True).start()
+        threading.Thread(target=self.service_worker_connection, daemon=True).start() # daemon thread exits when main worker thread exits
 
     def run(self): 
         while True: 
