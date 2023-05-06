@@ -31,7 +31,7 @@ class MRJob:
         self.in_progress_reduce_tasks = {} # maps worker node address to reduce task number
 
         self.completed_map_tasks = defaultdict(list) # maps worker node address to list of completed map task numbers
-        self.completed_map_tasks_locations = {} # maps completed mask task numbers to worker node listening socket address who completed it
+        self.completed_map_tasks_locations = {} # maps completed map task numbers to worker node listening socket address who completed it
         self.completed_tasks = 0 # number of total completed tasks, out of M + R
 
         self.lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # listening socket, through which workers connect to master
@@ -72,16 +72,34 @@ class MRJob:
         if self.initial_delay:
             time.sleep(10)
             self.initial_delay = False
-        sock, data, done = key.fileobj, key.data, False
+        sock, data, worker_addr = key.fileobj, key.data, sock.getpeername()
+        done = False # whether all tasks are complete
         if mask & selectors.EVENT_READ:
             raw_opcode = self._recvall(sock, 8)
             if not raw_opcode: 
-                # TODO: deal with dead worker
+                print(f"Master node detected worker node at {worker_addr} has disconnected")
+                self.worker_connections.pop(worker_addr) # remove worker node from list of worker nodes
+                # re-make available map tasks that were completed by disconnected worker node
+                for task in self.completed_map_tasks[worker_addr]:
+                    self.available_map_tasks.put(task)
+                    self.completed_map_tasks_locations.pop(task)
+                    self.completed_tasks -= 1
+                self.completed_map_tasks.pop(worker_addr)
+                # re-make available map and reduce tasks that were in progress by disconnected worker node
+                if worker_addr in self.in_progress_map_tasks:
+                    self.available_map_tasks.put(self.in_progress_map_tasks[worker_addr])
+                    self.in_progress_map_tasks.pop(worker_addr)
+                    self.completed_tasks -= 1
+                if worker_addr in self.in_progress_reduce_tasks:
+                    self.available_reduce_tasks.put(self.in_progress_reduce_tasks[worker_addr])
+                    self.in_progress_reduce_tasks.pop(worker_addr)
+                    self.completed_tasks -= 1
+                # remove the disconnected worker node from the selector
                 self.sel.unregister(sock)
                 sock.close() 
                 return done
             
-            opcode, worker_addr = struct.unpack('>Q', raw_opcode)[0], sock.getpeername()
+            opcode = struct.unpack('>Q', raw_opcode)[0]
             if opcode == REQUEST_TASK:
                 if not self.available_map_tasks.empty(): # assign map task to worker node
                     task = self.available_map_tasks.get()
