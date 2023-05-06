@@ -185,7 +185,7 @@ class Worker:
         offset = 0
         for line in file_lines:
             for k, v in self.mapper(None, offset, line):
-                intermediate_data[hash(k) % self.R].append((k, v))
+                intermediate_data[hash(k) % self.R + 1].append((k, v)) # ensure key is hashed to reduce partition in 1-R
             offset += len(line)
         # save each list of key, value pairs into different json files
         for reduce_partition_num, key_value_pairs in intermediate_data.items():
