@@ -18,5 +18,6 @@ MAP_RESULTS = 12
 
 
 # General constants
-MASTER_HOST = "10.250.21.115"
+import socket
+MASTER_HOST = socket.gethostbyname(socket.gethostname()) # get user machine's IP address
 MASTER_PORT = 12345

@@ -187,10 +187,10 @@ class Worker:
             for k, v in self.mapper(None, offset, line):
                 intermediate_data[hash(k) % self.R + 1].append((k, v)) # ensure key is hashed to reduce partition in 1-R
             offset += len(line)
-        # save each list of key, value pairs into different json files
-        for reduce_partition_num, key_value_pairs in intermediate_data.items():
+        # save each list of key, value pairs into different json files, saving an empty file if no data belongs to that reduce partition
+        for reduce_partition_num in range(1, self.R + 1):
             with open(f"mr-{self.map_task}-{reduce_partition_num}.json", "w") as f:
-                json.dump(key_value_pairs, f)
+                json.dump(intermediate_data[reduce_partition_num], f)
         print(f"Worker finished map task {self.map_task}/{self.M}")
         # notify master map task is done and request new task
         self.write_to_master_queue.put(struct.pack('>I', MAP_COMPLETE) + struct.pack('>I', self.listening_port))
