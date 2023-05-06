@@ -100,10 +100,9 @@ class Worker:
                         else:
                             print("ERROR: Invalid opcode received from another worker node")
                 if mask & selectors.EVENT_WRITE:
-                    while not data.write_to_worker_queue.empty():
-                        next_msg = data.write_to_worker_queue.get()
+                    if not data.write_to_worker_queue.empty():
                         print("HERE1")
-                        sock.sendall(next_msg) # TODO: blocking here on like second map task results
+                        sock.sendall(data.write_to_worker_queue.get()) # TODO: blocking here on like second map task results; erring here if non-blocking
                         print("HERE2")
 
     def service_master_connection(self, key, mask):
@@ -219,7 +218,7 @@ class Worker:
         data = bytearray() 
         while len(data) < n: 
             try: 
-                packet = sock.recv(n - len(data))
+                packet = sock.recv(min(4096, n - len(data)))
                 if not packet:
                     return None 
             except ConnectionResetError: 

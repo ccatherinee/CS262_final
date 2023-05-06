@@ -12,7 +12,7 @@ from pathlib import Path
 from constants import * 
 from collections import defaultdict
 
-
+i = 0
 class MRJob: 
     def __init__(self, M, R):
         self.M, self.R = M, R
@@ -68,6 +68,10 @@ class MRJob:
         print(f"Master node accepted connection from worker node at {addr}")
 
     def service_worker_connection(self, key, mask):
+        global i
+        if i == 0:
+            time.sleep(10)
+            i += 1
         sock, data, done = key.fileobj, key.data, False
         if mask & selectors.EVENT_READ:
             raw_opcode = self._recvall(sock, 8)
@@ -108,7 +112,7 @@ class MRJob:
                 self.completed_tasks += 1
                 # send workers currently working on reduce task the location of this map task's results
                 for reduce_worker_addr in self.in_progress_reduce_tasks:
-                    self.worker_connections[reduce_worker_addr].sendall(struct.pack('>Q', REDUCE_LOCATION_INFO) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(worker_addr[0])) + worker_addr[0].encode() + struct.pack('>Q', worker_addr[1]))
+                    self.worker_connections[reduce_worker_addr].sendall(struct.pack('>Q', REDUCE_LOCATION_INFO) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(worker_addr[0])) + worker_addr[0].encode() + struct.pack('>Q', worker_listening_port))
             elif opcode == REDUCE_COMPLETE:
                 completed_reduce_task = self.in_progress_reduce_tasks.pop(worker_addr)
                 print(f"Master node received completed reduce task {completed_reduce_task} from worker node at {worker_addr}")
@@ -121,9 +125,9 @@ class MRJob:
                     done = True
 
         if mask & selectors.EVENT_WRITE:
-            while not data.write_to_worker_queue.empty():
-                next_msg = data.write_to_worker_queue.get()
-                sock.sendall(next_msg)
+            if not data.write_to_worker_queue.empty():
+                sock.sendall(data.write_to_worker_queue.get())
+
         return done # return whether master.run should terminate / whether all tasks are done
 
             
@@ -132,7 +136,7 @@ class MRJob:
         data = bytearray() 
         while len(data) < n: 
             try: 
-                packet = sock.recv(n - len(data))
+                packet = sock.recv(min(4096, n - len(data)))
                 if not packet:
                     return None 
             except ConnectionResetError: 
