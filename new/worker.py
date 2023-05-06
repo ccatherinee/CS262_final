@@ -95,7 +95,6 @@ class Worker:
                         intermediate_results_len = struct.unpack('>I', self._recvall(sock, 4))[0]
                         intermediate_results = self._recvall(sock, intermediate_results_len).decode()
                         self.intermediate_results.put((completed_map_task, intermediate_results))
-                        pass
 
     def service_master_connection(self, key, mask):
         if mask & selectors.EVENT_READ:
