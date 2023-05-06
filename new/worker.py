@@ -108,7 +108,7 @@ class Worker:
             if opcode == ALL_TASKS_COMPLETE: # all tasks are done, so worker nodes should shut down
                 self.sel.unregister(self.master_sock)
                 self.master_sock.close() 
-                sys.exit(1)
+                sys.exit(0)
             elif opcode == NO_AVAILABLE_TASK:
                 # sleep for 1 second before requesting task again
                 time.sleep(1)
