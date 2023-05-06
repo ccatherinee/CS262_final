@@ -34,7 +34,7 @@ class Worker:
         # listening socket, through which other workers connect to this worker to request map task results
         self.listening_port = random.randint(20000, 60000)
         self.lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.lsock.bind(("", self.listening_port)) # run worker node on current machine at random port
+        self.lsock.bind((socket.gethostbyname(socket.gethostname()), self.listening_port)) # run worker node on current machine at random port
         self.lsock.listen() 
         self.lsock.setblocking(False) 
         print(f"Worker node listening at {self.lsock.getsockname()}")

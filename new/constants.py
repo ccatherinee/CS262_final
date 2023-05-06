@@ -18,6 +18,5 @@ MAP_RESULTS = 12
 
 
 # General constants
-from random import randint
 MASTER_HOST = "10.250.21.115"
-MASTER_PORT = randint(10000, 20000)
+MASTER_PORT = 12345
