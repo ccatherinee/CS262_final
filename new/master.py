@@ -12,10 +12,11 @@ from pathlib import Path
 from constants import * 
 from collections import defaultdict
 
-i = 0
+
 class MRJob: 
     def __init__(self, M, R):
         self.M, self.R = M, R
+        self.initial_delay = True # whether to delay assigning tasks for 10 seconds to allow all workers to connect first
 
         self.worker_connections = {} # maps worker node address to socket connection
 
@@ -68,10 +69,9 @@ class MRJob:
         print(f"Master node accepted connection from worker node at {addr}")
 
     def service_worker_connection(self, key, mask):
-        global i
-        if i == 0:
+        if self.initial_delay:
             time.sleep(10)
-            i += 1
+            self.initial_delay = False
         sock, data, done = key.fileobj, key.data, False
         if mask & selectors.EVENT_READ:
             raw_opcode = self._recvall(sock, 8)
