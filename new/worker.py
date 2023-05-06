@@ -9,15 +9,16 @@ import queue
 import random
 import sys
 import json
+import os
 from dill.source import getsource 
 from pathlib import Path
 from constants import * 
 from collections import defaultdict
 
-
-# TODO: fault tolerance, e.g., what happens when try to socket.connect to worker node that is down? 
+ 
 class Worker: 
-    def __init__(self): 
+    def __init__(self, die_map=False, die_reduce=False): 
+        self.die_map, self.die_reduce = die_map, die_reduce # whether to die in map or reduce task, for testing purposes
         self.M = self.R = None
         self.mapper = self.reducer = None
 
@@ -164,6 +165,9 @@ class Worker:
 
     def reduce_thread(self):
         print(f"Worker starting reduce task {self.reduce_task}/{self.R}")
+        if self.die_reduce:
+            print(f"Worker node died during reduce task {self.reduce_task}/{self.R}")
+            os._exit(1)
         map_task_results_received = set() # set of map task numbers that this worker has received results for
         map_task_results = defaultdict(list) # maps intermediate key to list of intermediate values for that key
         while len(map_task_results_received) < self.M: # there are still more intermediate results to receive
@@ -201,6 +205,9 @@ class Worker:
 
     def map_thread(self, map_task_input):
         print(f"Worker starting map task {self.map_task}/{self.M}")
+        if self.die_map:
+            print(f"Worker node died during map task {self.map_task}/{self.M}")
+            os._exit(1)
         file_lines = map_task_input.split('\n')
         intermediate_data = defaultdict(list) # key: reduce partition number, value: list of (key, value) pairs
         offset = 0
@@ -233,4 +240,10 @@ class Worker:
 
 
 if __name__ == '__main__':
-    Worker().run()
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "die_map":
+            Worker(die_map=True).run()
+        elif sys.argv[1] == "die_reduce":
+            Worker(die_reduce=True).run()
+    else:
+        Worker().run()

@@ -12,6 +12,10 @@ User's map and reduce functions must return iterables / generators (e.g., a list
 
 Users must start user.py first before starting workers.
 
+# Testing 
+python worker.py die_map makes that worker die during a map task.
+python worker.py die_reduce makes that worker die during a reduce task.
+
 # Final Write-up and Engineering Notebook
 
 The final write-up (containing our engineering notebook) is located at https://docs.google.com/document/d/1aoQZ7dhpFFf5QATdoE5dXEF7W8QXflFaidOS2B3m_0U/edit?usp=sharing.
