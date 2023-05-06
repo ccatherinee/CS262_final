@@ -19,5 +19,5 @@ MAP_RESULTS = 12
 
 # General constants
 import socket
-MASTER_HOST = socket.gethostbyname(socket.gethostname()) # get user machine's IP address
+MASTER_HOST = "10.250.21.115" # THIS MUST BE SET TO USER'S IP ADDRESS
 MASTER_PORT = 12345
