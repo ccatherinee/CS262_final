@@ -55,7 +55,7 @@ class Worker:
         self.master_sock.sendall(struct.pack('>I', REQUEST_TASK)) # request a map or reduce task from master node
 
         # thread for servicing other workers' requests to current worker
-        threading.Thread(target=self.service_worker_connection).start()
+        threading.Thread(target=self.service_worker_connection, daemon=True).start()
 
     def run(self): 
         while True: 
@@ -64,7 +64,9 @@ class Worker:
                 if key.fileobj == self.lsock:
                     self.accept_worker_connection() # only worker nodes connect to other workers' listening sockets
                 elif key.fileobj == self.master_sock:
-                    self.service_master_connection(key, mask)
+                    done = self.service_master_connection(key, mask)
+                    if done:
+                        return
 
     def accept_worker_connection(self):
         conn, addr = self.lsock.accept() 
@@ -103,12 +105,12 @@ class Worker:
             if not raw_opcode: # master node is down, so worker nodes should abort
                 self.sel.unregister(self.master_sock)
                 self.master_sock.close() 
-                sys.exit(1)
+                return True # signal that worker node should exit
             opcode = struct.unpack('>I', raw_opcode)[0]
             if opcode == ALL_TASKS_COMPLETE: # all tasks are done, so worker nodes should shut down
                 self.sel.unregister(self.master_sock)
                 self.master_sock.close() 
-                sys.exit(0)
+                return True # signal worker node should exit
             elif opcode == NO_AVAILABLE_TASK:
                 # sleep for 1 second before requesting task again
                 time.sleep(1)
@@ -145,6 +147,7 @@ class Worker:
         if mask & selectors.EVENT_WRITE:
             while not self.write_to_master_queue.empty(): 
                 self.master_sock.sendall(self.write_to_master_queue.get())
+        return False # signal that worker node should not exit
 
     def reduce_thread(self):
         print(f"Worker starting reduce task {self.reduce_task}/{self.R}")
