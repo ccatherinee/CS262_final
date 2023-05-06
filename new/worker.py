@@ -104,9 +104,9 @@ class Worker:
                         print("ERROR: Invalid opcode received from another worker node")
                 if mask & selectors.EVENT_WRITE:
                     if not data.write_to_worker_queue.empty():
-                        print("HERE1")
+                        # print("HERE1")
                         sock.sendall(data.write_to_worker_queue.get()) # TODO: blocking here on like second map task results for large data sets - network buffer full?; erring here if non-blocking
-                        print("HERE2")
+                        # print("HERE2")
 
     def service_master_connection(self, key, mask):
         if mask & selectors.EVENT_READ:
