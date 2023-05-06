@@ -108,12 +108,6 @@ class MRJob:
                 # send workers currently working on reduce task the location of this map task's results
                 for reduce_worker_addr in self.in_progress_reduce_tasks:
                     self.worker_connections[reduce_worker_addr].sendall(struct.pack('>I', REDUCE_LOCATION_INFO) + struct.pack('>I', completed_map_task) + struct.pack('>I', len(worker_addr[0])) + worker_addr[0].encode() + struct.pack('>I', worker_addr[1]))
-                if self.completed_tasks == self.M + self.R:
-                    for conn in self.worker_connections.values():
-                        conn.sendall(struct.pack('>I', ALL_TASKS_COMPLETE))
-                        self.sel.unregister(conn)
-                        conn.close()
-                    return True # signal that master.run should terminate now
             elif opcode == REDUCE_COMPLETE:
                 self.in_progress_reduce_tasks.pop(worker_addr)
                 self.completed_tasks += 1
