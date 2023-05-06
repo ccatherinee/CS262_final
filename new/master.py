@@ -31,7 +31,7 @@ class MRJob:
         self.in_progress_reduce_tasks = {} # maps worker node address to reduce task number
 
         self.completed_map_tasks = defaultdict(list) # maps worker node address to list of completed map task numbers
-        self.completed_map_tasks_locations = {} # maps completed mask task numbers to worker node address who completed it
+        self.completed_map_tasks_locations = {} # maps completed mask task numbers to worker node listening socket address who completed it
         self.completed_tasks = 0 # number of total completed tasks, out of M + R
 
         self.lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # listening socket, through which workers connect to master
@@ -100,7 +100,8 @@ class MRJob:
             elif opcode == MAP_COMPLETE:
                 completed_map_task = self.in_progress_map_tasks.pop(worker_addr)
                 self.completed_map_tasks[worker_addr].append(completed_map_task)
-                self.completed_map_tasks_locations[completed_map_task] = worker_addr
+                worker_listening_port = struct.unpack('>I', self._recvall(sock, 4))[0]
+                self.completed_map_tasks_locations[completed_map_task] = (worker_addr[0], worker_listening_port)
                 self.completed_tasks += 1
                 # send workers currently working on reduce task the location of this map task's results
                 for reduce_worker_addr in self.in_progress_reduce_tasks:

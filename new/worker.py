@@ -32,8 +32,9 @@ class Worker:
         self.intermediate_results = queue.Queue() # queue of intermediate map results received from other workers
 
         # listening socket, through which other workers connect to this worker to request map task results
+        self.listening_port = random.randint(20000, 90000)
         self.lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.lsock.bind(("", random.randint(20000, 30000))) # run worker node on current machine at random port
+        self.lsock.bind(("", self.listening_port)) # run worker node on current machine at random port
         self.lsock.listen() 
         self.lsock.setblocking(False) 
         print(f"Worker node listening at {self.lsock.getsockname()}")
@@ -78,23 +79,23 @@ class Worker:
                 sock = key.fileobj
                 if mask & selectors.EVENT_READ:
                     raw_opcode = self._recvall(sock, 4)
-                    if not raw_opcode:
-                        self.worker_sel.unregister(sock)
-                        sock.close()
-                        continue
-                    opcode = struct.unpack('>I', raw_opcode)[0]
-                    if opcode == MAP_RESULTS_REQUEST:
-                        completed_map_task = struct.unpack('>I', self._recvall(sock, 4))[0]
-                        reduce_partition = struct.unpack('>I', self._recvall(sock, 4))[0]
-                        # send intermediate results stored in json file to requesting worker
-                        intermediate_results = Path(f"mr-{completed_map_task}-{reduce_partition}.json").read_text()
-                        sock.sendall(struct.pack('>I', MAP_RESULTS) + struct.pack('>I', completed_map_task) + struct.pack('>I', len(intermediate_results)) + intermediate_results.encode())
-                    elif opcode == MAP_RESULTS:
-                        # read intermediate results from json file from socket, add to intermediate_results queue
-                        completed_map_task = struct.unpack('>I', self._recvall(sock, 4))[0]
-                        intermediate_results_len = struct.unpack('>I', self._recvall(sock, 4))[0]
-                        intermediate_results = self._recvall(sock, intermediate_results_len).decode()
-                        self.intermediate_results.put((completed_map_task, intermediate_results))
+                    if raw_opcode:
+                        opcode = struct.unpack('>I', raw_opcode)[0]
+                        if opcode == MAP_RESULTS_REQUEST:
+                            completed_map_task = struct.unpack('>I', self._recvall(sock, 4))[0]
+                            reduce_partition = struct.unpack('>I', self._recvall(sock, 4))[0]
+                            # send intermediate results stored in json file to requesting worker
+                            intermediate_results = Path(f"mr-{completed_map_task}-{reduce_partition}.json").read_text()
+                            sock.sendall(struct.pack('>I', MAP_RESULTS) + struct.pack('>I', completed_map_task) + struct.pack('>I', len(intermediate_results)) + intermediate_results.encode())
+                        elif opcode == MAP_RESULTS:
+                            # read intermediate results from json file from socket, add to intermediate_results queue
+                            completed_map_task = struct.unpack('>I', self._recvall(sock, 4))[0]
+                            intermediate_results_len = struct.unpack('>I', self._recvall(sock, 4))[0]
+                            intermediate_results = self._recvall(sock, intermediate_results_len).decode()
+                            self.intermediate_results.put((completed_map_task, intermediate_results))
+                    # Close socket between this worker and other worker because it was one-time use for the request
+                    self.worker_sel.unregister(sock)
+                    sock.close()
 
     def service_master_connection(self, key, mask):
         if mask & selectors.EVENT_READ:
@@ -140,8 +141,7 @@ class Worker:
                 self.request_intermediate_from.put((completed_map_task, worker_host, worker_port))
         if mask & selectors.EVENT_WRITE:
             while not self.write_to_master_node_queue.empty(): 
-                self.master_sock.sendall(self.write_to_master_node_queue.get() )
-
+                self.master_sock.sendall(self.write_to_master_node_queue.get())
 
     def reduce_thread(self):
         print(f"Worker starting reduce task {self.reduce_task}/{self.R}")
@@ -152,9 +152,10 @@ class Worker:
             if not self.request_intermediate_from.empty():
                 completed_map_task, worker_host, worker_port = self.request_intermediate_from.get()
                 if completed_map_task not in map_task_results_received: # need to request these map task results from worker
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                        s.connect((worker_host, worker_port))
-                        s.sendall(struct.pack('>I', MAP_RESULTS_REQUEST) + struct.pack('>I', completed_map_task) + struct.pack('>I', self.reduce_task))
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.connect((worker_host, worker_port))
+                    s.sendall(struct.pack('>I', MAP_RESULTS_REQUEST) + struct.pack('>I', completed_map_task) + struct.pack('>I', self.reduce_task))
+                    self.worker_sel.register(s, selectors.EVENT_READ, data=None)
             if not self.intermediate_results.empty():
                 completed_map_task, intermediate_results = self.intermediate_results.get()
                 intermediate_results = json.loads(intermediate_results) # list of (key, value) pairs
@@ -190,7 +191,7 @@ class Worker:
                 json.dump(key_value_pairs, f)
         print(f"Worker finished map task {self.map_task}/{self.M}")
         # notify master map task is done and request new task
-        self.write_to_master_queue.append(struct.pack('>I', MAP_COMPLETE))
+        self.write_to_master_queue.append(struct.pack('>I', MAP_COMPLETE) + struct.pack('>I', self.listening_port))
         self.map_task = None
         self.write_to_master_queue.append(struct.pack('>I', REQUEST_TASK))
         return
