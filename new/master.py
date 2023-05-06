@@ -56,7 +56,9 @@ class MRJob:
                 if key.data is None: 
                     self.accept_worker_connection() # accept new worker connection
                 else: 
-                    self.service_worker_connection(key, mask) # service existing worker connection
+                    done = self.service_worker_connection(key, mask) # service existing worker connection
+                    if done:
+                        return # exit out of master.run if all tasks are complete
 
     def accept_worker_connection(self): 
         conn, addr = self.lsock.accept() 
@@ -83,12 +85,12 @@ class MRJob:
                     task = self.available_map_tasks.get()
                     mapper_func_str = getsource(self.mapper).strip()
                     map_task_input = Path(f"mr-input-{task}.txt").read_text() # map task input is one text file
-                    sock.sendall(struct.pack('>I', MAP_TASK) + struct.pack('>I', task) + struct.pack('>I', self.M) + struct.pack('>I', len(mapper_func_str)) + mapper_func_str.encode() + struct.pack('>I', len(map_task_input)) + map_task_input.encode())
+                    sock.sendall(struct.pack('>I', MAP_TASK) + struct.pack('>I', task) + struct.pack('>I', self.M) + struct.pack('>I', self.R) + struct.pack('>I', len(mapper_func_str)) + mapper_func_str.encode() + struct.pack('>I', len(map_task_input)) + map_task_input.encode())
                     self.in_progress_map_tasks[worker_addr] = task
                 elif not self.available_reduce_tasks.empty(): # assign reduce task to worker node
                     task = self.available_reduce_tasks.get()
                     reducer_func_str = getsource(self.reducer).strip()
-                    sock.sendall(struct.pack('>I', REDUCE_TASK) + struct.pack('>I', task) + struct.pack('>I', self.R) + struct.pack('>I', len(reducer_func_str)) + reducer_func_str.encode())
+                    sock.sendall(struct.pack('>I', REDUCE_TASK) + struct.pack('>I', task) + struct.pack('>I', self.M) + struct.pack('>I', self.R) + struct.pack('>I', len(reducer_func_str)) + reducer_func_str.encode())
                     self.in_progress_reduce_tasks[worker_addr] = task
                     # send this new reduce worker the locations of previously completed map tasks
                     for completed_map_task, map_worker_addr in self.completed_map_tasks_locations.items():
@@ -106,9 +108,22 @@ class MRJob:
                 # send workers currently working on reduce task the location of this map task's results
                 for reduce_worker_addr in self.in_progress_reduce_tasks:
                     self.worker_connections[reduce_worker_addr].sendall(struct.pack('>I', REDUCE_LOCATION_INFO) + struct.pack('>I', completed_map_task) + struct.pack('>I', len(worker_addr[0])) + worker_addr[0].encode() + struct.pack('>I', worker_addr[1]))
+                if self.completed_tasks == self.M + self.R:
+                    for conn in self.worker_connections.values():
+                        conn.sendall(struct.pack('>I', ALL_TASKS_COMPLETE))
+                        self.sel.unregister(conn)
+                        conn.close()
+                    return True # signal that master.run should terminate now
             elif opcode == REDUCE_COMPLETE:
                 self.in_progress_reduce_tasks.pop(worker_addr)
                 self.completed_tasks += 1
+                if self.completed_tasks == self.M + self.R:
+                    for conn in self.worker_connections.values():
+                        conn.sendall(struct.pack('>I', ALL_TASKS_COMPLETE))
+                        self.sel.unregister(conn)
+                        conn.close()
+                    return True # signal that master.run should terminate now
+        return False # signal that master.run should not terminate, tasks are not all done
 
         # if mask & selectors.EVENT_WRITE:
         #     if len(data.out) > 0: # send all out data to worker node

@@ -46,7 +46,7 @@ class Worker:
         
         # selector for master socket activity and new workers connecting
         self.sel = selectors.DefaultSelector()
-        self.sel.register(self.master_sock, selectors.EVENT_READ | selectors.EVENT_WRITE, data=types.SimpleNamespace(out=[]))
+        self.sel.register(self.master_sock, selectors.EVENT_READ | selectors.EVENT_WRITE, data=None)
         self.sel.register(self.lsock, selectors.EVENT_READ, data=None) 
 
         # selector for worker sockets once they have connected
@@ -91,8 +91,8 @@ class Worker:
                             # read intermediate results from json file from socket, add to intermediate_results queue
                             completed_map_task = struct.unpack('>I', self._recvall(sock, 4))[0]
                             intermediate_results_len = struct.unpack('>I', self._recvall(sock, 4))[0]
-                            intermediate_results = self._recvall(sock, intermediate_results_len).decode()
-                            self.intermediate_results.put((completed_map_task, intermediate_results))
+                            results = self._recvall(sock, intermediate_results_len).decode()
+                            self.intermediate_results.put((completed_map_task, results))
                     # Close socket between this worker and other worker because it was one-time use for the request
                     self.worker_sel.unregister(sock)
                     sock.close()
@@ -116,6 +116,7 @@ class Worker:
             elif opcode == MAP_TASK:
                 self.map_task = struct.unpack('>I', self._recvall(self.master_sock, 4))[0] # get map task number
                 self.M = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
+                self.R = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 mapper_func_len = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 mapper_func = self._recvall(self.master_sock, mapper_func_len).decode()
                 ldict = {}
@@ -123,15 +124,17 @@ class Worker:
                 self.mapper = ldict["mapper"]
                 map_task_input_len = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 map_task_input = self._recvall(self.master_sock, map_task_input_len).decode()
-                threading.Thread(target=self.map_thread, args=(map_task_input,)).start()
+                threading.Thread(target=self.map_thread, args=(map_task_input,)).start() # start thread for map task
             elif opcode == REDUCE_TASK:
                 self.reduce_task = struct.unpack('>I', self._recvall(self.master_sock, 4))[0] # get reduce task number
+                self.M = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 self.R = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 reducer_func_len = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 reducer_func = self._recvall(self.master_sock, reducer_func_len).decode()
                 ldict = {}
                 exec(reducer_func, globals(), ldict)
-                threading.Thread(target=self.map_thread).start()
+                self.reducer = ldict["reducer"]
+                threading.Thread(target=self.reduce_thread).start() # start thread for reduce task
             elif opcode == REDUCE_LOCATION_INFO:
                 # another worker at host, port has the result for the specified completed map task
                 completed_map_task = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
@@ -145,7 +148,6 @@ class Worker:
 
     def reduce_thread(self):
         print(f"Worker starting reduce task {self.reduce_task}/{self.R}")
-
         map_task_results_received = set() # set of map task numbers that this worker has received results for
         map_task_results = defaultdict(list) # maps intermediate key to list of intermediate values for that key
         while len(map_task_results_received) < self.M: # there are still more intermediate results to receive
@@ -165,7 +167,7 @@ class Worker:
 
         print(f"Worker finished shuffle stage of reduce task {self.reduce_task}/{self.R}")
         with open(f"mr-output-{self.reduce_task}.txt", "w") as f:
-            for k, vs in map_task_results_received:
+            for k, vs in map_task_results.items():
                 for v in self.reducer(None, k, vs):
                     f.write(f"{k}\t{v}\n")
 
