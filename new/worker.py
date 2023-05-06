@@ -32,7 +32,7 @@ class Worker:
         self.intermediate_results = queue.Queue() # queue of intermediate map results received from other workers
 
         # listening socket, through which other workers connect to this worker to request map task results
-        self.listening_port = random.randint(20000, 90000)
+        self.listening_port = random.randint(20000, 60000)
         self.lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.lsock.bind(("", self.listening_port)) # run worker node on current machine at random port
         self.lsock.listen() 
