@@ -90,11 +90,9 @@ class MRJob:
                 if worker_addr in self.in_progress_map_tasks:
                     self.available_map_tasks.put(self.in_progress_map_tasks[worker_addr])
                     self.in_progress_map_tasks.pop(worker_addr)
-                    self.completed_tasks -= 1
                 if worker_addr in self.in_progress_reduce_tasks:
                     self.available_reduce_tasks.put(self.in_progress_reduce_tasks[worker_addr])
                     self.in_progress_reduce_tasks.pop(worker_addr)
-                    self.completed_tasks -= 1
                 # remove the disconnected worker node from the selector
                 self.sel.unregister(sock)
                 sock.close() 
