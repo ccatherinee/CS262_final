@@ -15,7 +15,6 @@ from constants import *
 from collections import defaultdict
 
 
-# TODO: figure out blocking / non-blocking, sendall when haven't checked writable, etc.
 # TODO: fault tolerance, e.g., what happens when try to socket.connect to worker node that is down? 
 class Worker: 
     def __init__(self): 
@@ -102,7 +101,7 @@ class Worker:
                 if mask & selectors.EVENT_WRITE:
                     if not data.write_to_worker_queue.empty():
                         print("HERE1")
-                        sock.sendall(data.write_to_worker_queue.get()) # TODO: blocking here on like second map task results; erring here if non-blocking
+                        sock.sendall(data.write_to_worker_queue.get()) # TODO: blocking here on like second map task results for large data sets - network buffer full?; erring here if non-blocking
                         print("HERE2")
 
     def service_master_connection(self, key, mask):
