@@ -83,12 +83,14 @@ class MRJob:
             if opcode == REQUEST_TASK:
                 if not self.available_map_tasks.empty(): # assign map task to worker node
                     task = self.available_map_tasks.get()
+                    print(f"Master node assigning map task {task}/{self.M} to worker node at {worker_addr}")
                     mapper_func_str = getsource(self.mapper).strip()
                     map_task_input = Path(f"mr-input-{task}.txt").read_text() # map task input is one text file
                     sock.sendall(struct.pack('>I', MAP_TASK) + struct.pack('>I', task) + struct.pack('>I', self.M) + struct.pack('>I', self.R) + struct.pack('>I', len(mapper_func_str)) + mapper_func_str.encode() + struct.pack('>I', len(map_task_input)) + map_task_input.encode())
                     self.in_progress_map_tasks[worker_addr] = task
                 elif not self.available_reduce_tasks.empty(): # assign reduce task to worker node
                     task = self.available_reduce_tasks.get()
+                    print(f"Master node assigning reduce task {task}/{self.R} to worker node at {worker_addr}")
                     reducer_func_str = getsource(self.reducer).strip()
                     sock.sendall(struct.pack('>I', REDUCE_TASK) + struct.pack('>I', task) + struct.pack('>I', self.M) + struct.pack('>I', self.R) + struct.pack('>I', len(reducer_func_str)) + reducer_func_str.encode())
                     self.in_progress_reduce_tasks[worker_addr] = task
@@ -101,6 +103,7 @@ class MRJob:
                     sock.sendall(struct.pack('>I', ALL_TASKS_COMPLETE))
             elif opcode == MAP_COMPLETE:
                 completed_map_task = self.in_progress_map_tasks.pop(worker_addr)
+                print(f"Master node received completed map task {completed_map_task} from worker node at {worker_addr}")
                 self.completed_map_tasks[worker_addr].append(completed_map_task)
                 worker_listening_port = struct.unpack('>I', self._recvall(sock, 4))[0]
                 self.completed_map_tasks_locations[completed_map_task] = (worker_addr[0], worker_listening_port)
@@ -109,7 +112,8 @@ class MRJob:
                 for reduce_worker_addr in self.in_progress_reduce_tasks:
                     self.worker_connections[reduce_worker_addr].sendall(struct.pack('>I', REDUCE_LOCATION_INFO) + struct.pack('>I', completed_map_task) + struct.pack('>I', len(worker_addr[0])) + worker_addr[0].encode() + struct.pack('>I', worker_addr[1]))
             elif opcode == REDUCE_COMPLETE:
-                self.in_progress_reduce_tasks.pop(worker_addr)
+                completed_reduce_task = self.in_progress_reduce_tasks.pop(worker_addr)
+                print(f"Master node received completed reduce task {completed_reduce_task} from worker node at {worker_addr}")
                 self.completed_tasks += 1
                 if self.completed_tasks == self.M + self.R:
                     for conn in self.worker_connections.values():
