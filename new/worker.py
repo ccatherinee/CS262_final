@@ -173,9 +173,9 @@ class Worker:
 
         print(f"Worker finished reduce task {self.reduce_task}/{self.R}")
         # notify master map task is done and request new task
-        self.write_to_master_queue.append(struct.pack('>I', REDUCE_COMPLETE))
+        self.write_to_master_queue.put(struct.pack('>I', REDUCE_COMPLETE))
         self.reduce_task = None
-        self.write_to_master_queue.append(struct.pack('>I', REQUEST_TASK))
+        self.write_to_master_queue.put(struct.pack('>I', REQUEST_TASK))
         return
 
     def map_thread(self, map_task_input):
@@ -193,9 +193,9 @@ class Worker:
                 json.dump(key_value_pairs, f)
         print(f"Worker finished map task {self.map_task}/{self.M}")
         # notify master map task is done and request new task
-        self.write_to_master_queue.append(struct.pack('>I', MAP_COMPLETE) + struct.pack('>I', self.listening_port))
+        self.write_to_master_queue.put(struct.pack('>I', MAP_COMPLETE) + struct.pack('>I', self.listening_port))
         self.map_task = None
-        self.write_to_master_queue.append(struct.pack('>I', REQUEST_TASK))
+        self.write_to_master_queue.put(struct.pack('>I', REQUEST_TASK))
         return
 
     def _recvall(self, sock, n): # receives exactly n bytes from socket, returning None if connection broken
