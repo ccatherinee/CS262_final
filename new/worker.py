@@ -53,7 +53,7 @@ class Worker:
         # selector for worker sockets once they have connected
         self.worker_sel = selectors.DefaultSelector()
 
-        self.write_to_master_queue.put(struct.pack('>I', REQUEST_TASK)) # request a map or reduce task from master node
+        self.write_to_master_queue.put(struct.pack('>Q', REQUEST_TASK)) # request a map or reduce task from master node
 
         # thread for servicing other workers' requests to current worker
         threading.Thread(target=self.service_worker_connection, daemon=True).start() # daemon thread exits when main worker thread exits
@@ -71,42 +71,49 @@ class Worker:
 
     def accept_worker_connection(self):
         conn, addr = self.lsock.accept() 
-        conn.setblocking(False) 
-        self.worker_sel.register(conn, selectors.EVENT_READ, data=None)
+        conn.setblocking(True) # TODO: blocking or non-blocking? things break with non-blocking
+        data = types.SimpleNamespace(addr=addr, write_to_worker_queue=queue.Queue())
+        self.worker_sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
+        print(f"Worker node accepted connection from {addr}")
 
     def service_worker_connection(self):
         while True:
             events = self.worker_sel.select(timeout=None)
             for key, mask in events:
-                sock = key.fileobj
+                sock, data = key.fileobj, key.data
                 if mask & selectors.EVENT_READ:
-                    raw_opcode = self._recvall(sock, 4)
+                    raw_opcode = self._recvall(sock, 8)
                     if raw_opcode:
-                        opcode = struct.unpack('>I', raw_opcode)[0]
+                        opcode = struct.unpack('>Q', raw_opcode)[0]
                         if opcode == MAP_RESULTS_REQUEST:
-                            completed_map_task = struct.unpack('>I', self._recvall(sock, 4))[0]
-                            reduce_partition = struct.unpack('>I', self._recvall(sock, 4))[0]
+                            completed_map_task = struct.unpack('>Q', self._recvall(sock, 8))[0]
+                            reduce_partition = struct.unpack('>Q', self._recvall(sock, 8))[0]
                             # send intermediate results stored in json file to requesting worker
-                            intermediate_results = Path(f"mr-{completed_map_task}-{reduce_partition}.json").read_text()
-                            sock.sendall(struct.pack('>I', MAP_RESULTS) + struct.pack('>I', completed_map_task) + struct.pack('>I', len(intermediate_results)) + intermediate_results.encode())
+                            intermediate_results = Path(f"mr-{completed_map_task}-{reduce_partition}.json").read_bytes()
+                            data.write_to_worker_queue.put(struct.pack('>Q', MAP_RESULTS) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(intermediate_results)) + intermediate_results)
                         elif opcode == MAP_RESULTS:
                             # read intermediate results from json file from socket, add to intermediate_results queue
-                            completed_map_task = struct.unpack('>I', self._recvall(sock, 4))[0]
-                            intermediate_results_len = struct.unpack('>I', self._recvall(sock, 4))[0]
+                            completed_map_task = struct.unpack('>Q', self._recvall(sock, 8))[0]
+                            intermediate_results_len = struct.unpack('>Q', self._recvall(sock, 8))[0]
                             results = self._recvall(sock, intermediate_results_len).decode()
                             self.intermediate_results.put((completed_map_task, results))
-                    # Close socket between this worker and other worker because it was one-time use for the request
-                    self.worker_sel.unregister(sock)
-                    sock.close()
+                        else:
+                            print("ERROR: Invalid opcode received from another worker node")
+                if mask & selectors.EVENT_WRITE:
+                    while not data.write_to_worker_queue.empty():
+                        next_msg = data.write_to_worker_queue.get()
+                        print("HERE1")
+                        sock.sendall(next_msg) # TODO: blocking here on like second map task results
+                        print("HERE2")
 
     def service_master_connection(self, key, mask):
         if mask & selectors.EVENT_READ:
-            raw_opcode = self._recvall(self.master_sock, 4)
+            raw_opcode = self._recvall(self.master_sock, 8)
             if not raw_opcode: # master node is down, so worker nodes should abort
                 self.sel.unregister(self.master_sock)
                 self.master_sock.close() 
                 return True # signal that worker node should exit
-            opcode = struct.unpack('>I', raw_opcode)[0]
+            opcode = struct.unpack('>Q', raw_opcode)[0]
             if opcode == ALL_TASKS_COMPLETE: # all tasks are done, so worker nodes should shut down
                 self.sel.unregister(self.master_sock)
                 self.master_sock.close() 
@@ -114,27 +121,27 @@ class Worker:
             elif opcode == NO_AVAILABLE_TASK:
                 # sleep for 1 second before requesting task again
                 time.sleep(1)
-                self.master_sock.sendall(struct.pack('>I', REQUEST_TASK))
+                self.master_sock.sendall(struct.pack('>Q', REQUEST_TASK))
             elif opcode == MAP_TASK:
-                self.map_task = struct.unpack('>I', self._recvall(self.master_sock, 4))[0] # get map task number
-                self.M = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
+                self.map_task = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0] # get map task number
+                self.M = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
                 print(f"Worker node receiving map task {self.map_task}/{self.M} from master node")
-                self.R = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
-                mapper_func_len = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
+                self.R = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
+                mapper_func_len = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
                 mapper_func = self._recvall(self.master_sock, mapper_func_len).decode()
                 ldict = {}
                 exec(mapper_func, globals(), ldict)
                 self.mapper = ldict["mapper"]
-                map_task_input_len = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
+                map_task_input_len = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
                 map_task_input = self._recvall(self.master_sock, map_task_input_len).decode()
                 print(f"Worker node received map task input file from master node")
                 threading.Thread(target=self.map_thread, args=(map_task_input,)).start() # start thread for map task
             elif opcode == REDUCE_TASK:
-                self.reduce_task = struct.unpack('>I', self._recvall(self.master_sock, 4))[0] # get reduce task number
-                self.M = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
-                self.R = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
+                self.reduce_task = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0] # get reduce task number
+                self.M = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
+                self.R = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
                 print(f"Worker node receiving reduce task {self.reduce_task}/{self.R} from master node")
-                reducer_func_len = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
+                reducer_func_len = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
                 reducer_func = self._recvall(self.master_sock, reducer_func_len).decode()
                 ldict = {}
                 exec(reducer_func, globals(), ldict)
@@ -142,11 +149,13 @@ class Worker:
                 threading.Thread(target=self.reduce_thread).start() # start thread for reduce task
             elif opcode == REDUCE_LOCATION_INFO:
                 # another worker at host, port has the result for the specified completed map task
-                completed_map_task = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
-                worker_host_len = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
+                completed_map_task = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
+                worker_host_len = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
                 worker_host = self._recvall(self.master_sock, worker_host_len).decode()
-                worker_port = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
+                worker_port = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
                 self.request_intermediate_from.put((completed_map_task, worker_host, worker_port))
+            else:
+                print("ERROR: Invalid opcode received from master node")
         if mask & selectors.EVENT_WRITE:
             while not self.write_to_master_queue.empty(): 
                 self.master_sock.sendall(self.write_to_master_queue.get())
@@ -162,14 +171,16 @@ class Worker:
                 if completed_map_task not in map_task_results_received: # need to request these map task results from worker
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.connect((worker_host, worker_port))
-                    s.sendall(struct.pack('>I', MAP_RESULTS_REQUEST) + struct.pack('>I', completed_map_task) + struct.pack('>I', self.reduce_task))
+                    s.sendall(struct.pack('>Q', MAP_RESULTS_REQUEST) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', self.reduce_task))
                     self.worker_sel.register(s, selectors.EVENT_READ, data=None)
+                    print(f"Worker node sent request for results from map task {completed_map_task}")
             if not self.intermediate_results.empty():
                 completed_map_task, intermediate_results = self.intermediate_results.get()
                 intermediate_results = json.loads(intermediate_results) # list of (key, value) pairs
                 for k, v in intermediate_results:
                     map_task_results[k].append(v)
                 map_task_results_received.add(completed_map_task)
+                print(f"Worker node received results from map task {completed_map_task}")
 
         print(f"Worker finished shuffle stage of reduce task {self.reduce_task}/{self.R}")
         with open(f"mr-output-{self.reduce_task}.txt", "w") as f:
@@ -179,9 +190,9 @@ class Worker:
 
         print(f"Worker finished reduce task {self.reduce_task}/{self.R}")
         # notify master map task is done and request new task
-        self.write_to_master_queue.put(struct.pack('>I', REDUCE_COMPLETE))
+        self.write_to_master_queue.put(struct.pack('>Q', REDUCE_COMPLETE))
         self.reduce_task = None
-        self.write_to_master_queue.put(struct.pack('>I', REQUEST_TASK))
+        self.write_to_master_queue.put(struct.pack('>Q', REQUEST_TASK))
         return
 
     def map_thread(self, map_task_input):
@@ -199,9 +210,9 @@ class Worker:
                 json.dump(intermediate_data[reduce_partition_num], f)
         print(f"Worker finished map task {self.map_task}/{self.M}")
         # notify master map task is done and request new task
-        self.write_to_master_queue.put(struct.pack('>I', MAP_COMPLETE) + struct.pack('>I', self.listening_port))
+        self.write_to_master_queue.put(struct.pack('>Q', MAP_COMPLETE) + struct.pack('>Q', self.listening_port))
         self.map_task = None
-        self.write_to_master_queue.put(struct.pack('>I', REQUEST_TASK))
+        self.write_to_master_queue.put(struct.pack('>Q', REQUEST_TASK))
         return
 
     def _recvall(self, sock, n): # receives exactly n bytes from socket, returning None if connection broken

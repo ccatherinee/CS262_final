@@ -61,62 +61,61 @@ class MRJob:
 
     def accept_worker_connection(self): 
         conn, addr = self.lsock.accept() 
-        conn.setblocking(False) 
+        conn.setblocking(True) # TODO: blocking or non-blocking? things break if non-blocking
         data = types.SimpleNamespace(write_to_worker_queue=queue.Queue())
         self.sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
         self.worker_connections[addr] = conn
-        # self.worker_out[conn] = data.out
         print(f"Master node accepted connection from worker node at {addr}")
 
     def service_worker_connection(self, key, mask):
         sock, data, done = key.fileobj, key.data, False
         if mask & selectors.EVENT_READ:
-            raw_opcode = self._recvall(sock, 4)
+            raw_opcode = self._recvall(sock, 8)
             if not raw_opcode: 
                 # TODO: deal with dead worker
                 self.sel.unregister(sock)
                 sock.close() 
                 return done
             
-            opcode, worker_addr = struct.unpack('>I', raw_opcode)[0], sock.getpeername()
+            opcode, worker_addr = struct.unpack('>Q', raw_opcode)[0], sock.getpeername()
             if opcode == REQUEST_TASK:
                 if not self.available_map_tasks.empty(): # assign map task to worker node
                     task = self.available_map_tasks.get()
                     print(f"Master node assigning map task {task}/{self.M} to worker node at {worker_addr}")
                     mapper_func_str = getsource(self.mapper).strip()
-                    map_task_input = Path(f"mr-input-{task}.txt").read_text() # map task input is one text file
-                    data.write_to_worker_queue.put(struct.pack('>I', MAP_TASK) + struct.pack('>I', task) + struct.pack('>I', self.M) + struct.pack('>I', self.R) + struct.pack('>I', len(mapper_func_str)) + mapper_func_str.encode() + struct.pack('>I', len(map_task_input)) + map_task_input.encode())
+                    map_task_input = Path(f"mr-input-{task}.txt").read_bytes() # map task input is one text file
+                    data.write_to_worker_queue.put(struct.pack('>Q', MAP_TASK) + struct.pack('>Q', task) + struct.pack('>Q', self.M) + struct.pack('>Q', self.R) + struct.pack('>Q', len(mapper_func_str)) + mapper_func_str.encode() + struct.pack('>Q', len(map_task_input)) + map_task_input)
                     self.in_progress_map_tasks[worker_addr] = task
                 elif not self.available_reduce_tasks.empty(): # assign reduce task to worker node
                     task = self.available_reduce_tasks.get()
                     print(f"Master node assigning reduce task {task}/{self.R} to worker node at {worker_addr}")
                     reducer_func_str = getsource(self.reducer).strip()
-                    data.write_to_worker_queue.put(struct.pack('>I', REDUCE_TASK) + struct.pack('>I', task) + struct.pack('>I', self.M) + struct.pack('>I', self.R) + struct.pack('>I', len(reducer_func_str)) + reducer_func_str.encode())
+                    data.write_to_worker_queue.put(struct.pack('>Q', REDUCE_TASK) + struct.pack('>Q', task) + struct.pack('>Q', self.M) + struct.pack('>Q', self.R) + struct.pack('>Q', len(reducer_func_str)) + reducer_func_str.encode())
                     self.in_progress_reduce_tasks[worker_addr] = task
                     # send this new reduce worker the locations of previously completed map tasks
                     for completed_map_task, map_worker_addr in self.completed_map_tasks_locations.items():
-                        data.write_to_worker_queue.put(struct.pack('>I', REDUCE_LOCATION_INFO) + struct.pack('>I', completed_map_task) + struct.pack('>I', len(map_worker_addr[0])) + map_worker_addr[0].encode() + struct.pack('>I', map_worker_addr[1]))
+                        data.write_to_worker_queue.put(struct.pack('>Q', REDUCE_LOCATION_INFO) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(map_worker_addr[0])) + map_worker_addr[0].encode() + struct.pack('>Q', map_worker_addr[1]))
                 elif self.completed_tasks < self.M + self.R: # no tasks currently available
-                    data.write_to_worker_queue.put(struct.pack('>I', NO_AVAILABLE_TASK))
+                    data.write_to_worker_queue.put(struct.pack('>Q', NO_AVAILABLE_TASK))
                 elif self.completed_tasks == self.M + self.R: # all tasks completed
-                    data.write_to_worker_queue.put(struct.pack('>I', ALL_TASKS_COMPLETE))
+                    data.write_to_worker_queue.put(struct.pack('>Q', ALL_TASKS_COMPLETE))
             elif opcode == MAP_COMPLETE:
                 completed_map_task = self.in_progress_map_tasks.pop(worker_addr)
                 print(f"Master node received completed map task {completed_map_task} from worker node at {worker_addr}")
                 self.completed_map_tasks[worker_addr].append(completed_map_task)
-                worker_listening_port = struct.unpack('>I', self._recvall(sock, 4))[0]
+                worker_listening_port = struct.unpack('>Q', self._recvall(sock, 8))[0]
                 self.completed_map_tasks_locations[completed_map_task] = (worker_addr[0], worker_listening_port)
                 self.completed_tasks += 1
                 # send workers currently working on reduce task the location of this map task's results
                 for reduce_worker_addr in self.in_progress_reduce_tasks:
-                    self.worker_connections[reduce_worker_addr].sendall(struct.pack('>I', REDUCE_LOCATION_INFO) + struct.pack('>I', completed_map_task) + struct.pack('>I', len(worker_addr[0])) + worker_addr[0].encode() + struct.pack('>I', worker_addr[1]))
+                    self.worker_connections[reduce_worker_addr].sendall(struct.pack('>Q', REDUCE_LOCATION_INFO) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(worker_addr[0])) + worker_addr[0].encode() + struct.pack('>Q', worker_addr[1]))
             elif opcode == REDUCE_COMPLETE:
                 completed_reduce_task = self.in_progress_reduce_tasks.pop(worker_addr)
                 print(f"Master node received completed reduce task {completed_reduce_task} from worker node at {worker_addr}")
                 self.completed_tasks += 1
                 if self.completed_tasks == self.M + self.R:
                     for conn in self.worker_connections.values():
-                        conn.sendall(struct.pack('>I', ALL_TASKS_COMPLETE))
+                        conn.sendall(struct.pack('>Q', ALL_TASKS_COMPLETE))
                         self.sel.unregister(conn)
                         conn.close()
                     done = True
