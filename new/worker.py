@@ -70,7 +70,7 @@ class Worker:
 
     def accept_worker_connection(self):
         conn, addr = self.lsock.accept() 
-        conn.setblocking(False) # TODO: blocking or non-blocking? things break with non-blocking on big data sets
+        conn.setblocking(False) # TODO: make non-blocking work on big datasets
         data = types.SimpleNamespace(addr=addr, write_to_worker_queue=queue.Queue())
         self.worker_sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
         print(f"Worker node accepted connection from {addr}")
@@ -82,22 +82,25 @@ class Worker:
                 sock, data = key.fileobj, key.data
                 if mask & selectors.EVENT_READ:
                     raw_opcode = self._recvall(sock, 8)
-                    if raw_opcode:
-                        opcode = struct.unpack('>Q', raw_opcode)[0]
-                        if opcode == MAP_RESULTS_REQUEST:
-                            completed_map_task = struct.unpack('>Q', self._recvall(sock, 8))[0]
-                            reduce_partition = struct.unpack('>Q', self._recvall(sock, 8))[0]
-                            # send intermediate results stored in json file to requesting worker
-                            intermediate_results = Path(f"mr-{completed_map_task}-{reduce_partition}.json").read_bytes()
-                            data.write_to_worker_queue.put(struct.pack('>Q', MAP_RESULTS) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(intermediate_results)) + intermediate_results)
-                        elif opcode == MAP_RESULTS:
-                            # read intermediate results from json file from socket, add to intermediate_results queue
-                            completed_map_task = struct.unpack('>Q', self._recvall(sock, 8))[0]
-                            intermediate_results_len = struct.unpack('>Q', self._recvall(sock, 8))[0]
-                            results = self._recvall(sock, intermediate_results_len).decode()
-                            self.intermediate_results.put((completed_map_task, results))
-                        else:
-                            print("ERROR: Invalid opcode received from another worker node")
+                    if raw_opcode is None: # other worker node has disconnected
+                        self.worker_sel.unregister(sock)
+                        sock.close()
+                        continue
+                    opcode = struct.unpack('>Q', raw_opcode)[0]
+                    if opcode == MAP_RESULTS_REQUEST:
+                        completed_map_task = struct.unpack('>Q', self._recvall(sock, 8))[0]
+                        reduce_partition = struct.unpack('>Q', self._recvall(sock, 8))[0]
+                        # send intermediate results stored in json file to requesting worker
+                        intermediate_results = Path(f"mr-{completed_map_task}-{reduce_partition}.json").read_bytes()
+                        data.write_to_worker_queue.put(struct.pack('>Q', MAP_RESULTS) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(intermediate_results)) + intermediate_results)
+                    elif opcode == MAP_RESULTS:
+                        # read intermediate results from json file from socket, add to intermediate_results queue
+                        completed_map_task = struct.unpack('>Q', self._recvall(sock, 8))[0]
+                        intermediate_results_len = struct.unpack('>Q', self._recvall(sock, 8))[0]
+                        results = self._recvall(sock, intermediate_results_len).decode()
+                        self.intermediate_results.put((completed_map_task, results))
+                    else:
+                        print("ERROR: Invalid opcode received from another worker node")
                 if mask & selectors.EVENT_WRITE:
                     if not data.write_to_worker_queue.empty():
                         print("HERE1")
@@ -167,11 +170,14 @@ class Worker:
             if not self.request_intermediate_from.empty():
                 completed_map_task, worker_host, worker_port = self.request_intermediate_from.get()
                 if completed_map_task not in map_task_results_received: # need to request these map task results from worker
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.connect((worker_host, worker_port))
-                    s.sendall(struct.pack('>Q', MAP_RESULTS_REQUEST) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', self.reduce_task))
-                    self.worker_sel.register(s, selectors.EVENT_READ, data=None)
-                    print(f"Worker node sent request for results from map task {completed_map_task}")
+                    try:
+                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.connect((worker_host, worker_port))
+                        s.sendall(struct.pack('>Q', MAP_RESULTS_REQUEST) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', self.reduce_task))
+                        self.worker_sel.register(s, selectors.EVENT_READ, data=None)
+                        print(f"Worker node sent request for results from map task {completed_map_task}")
+                    except (ConnectionRefusedError, TimeoutError): # other worker node is down
+                        pass
             if not self.intermediate_results.empty():
                 completed_map_task, intermediate_results = self.intermediate_results.get()
                 intermediate_results = json.loads(intermediate_results) # list of (key, value) pairs

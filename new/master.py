@@ -62,7 +62,7 @@ class MRJob:
 
     def accept_worker_connection(self): 
         conn, addr = self.lsock.accept() 
-        conn.setblocking(False) # TODO: blocking or non-blocking? things break if non-blocking on big data sets
+        conn.setblocking(False) # TODO: make non-blocking work on big datasets
         data = types.SimpleNamespace(write_to_worker_queue=queue.Queue())
         self.sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
         self.worker_connections[addr] = conn
@@ -76,7 +76,7 @@ class MRJob:
         done = False # whether all tasks are complete
         if mask & selectors.EVENT_READ:
             raw_opcode = self._recvall(sock, 8)
-            if not raw_opcode: 
+            if raw_opcode is None: 
                 print(f"Master node detected worker node at {worker_addr} has disconnected")
                 self.worker_connections.pop(worker_addr) # remove worker node from list of worker nodes
                 # re-make available map tasks that were completed by disconnected worker node
