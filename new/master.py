@@ -56,6 +56,9 @@ class MRJob:
                 if key.data is None: 
                     self.accept_worker_connection() # accept new worker connection
                 else: 
+                    if self.initial_delay:
+                        time.sleep(10) # delay assigning tasks for 10 seconds to allow all workers to connect first
+                        self.initial_delay = False
                     done = self.service_worker_connection(key, mask) # service existing worker connection
                     if done:
                         return # exit out of master.run if all tasks are complete
@@ -69,10 +72,8 @@ class MRJob:
         print(f"Master node accepted connection from worker node at {addr}")
 
     def service_worker_connection(self, key, mask):
-        if self.initial_delay:
-            time.sleep(10)
-            self.initial_delay = False
-        sock, data, worker_addr = key.fileobj, key.data, sock.getpeername()
+        sock, data = key.fileobj, key.data
+        worker_addr = sock.getpeername()
         done = False # whether all tasks are complete
         if mask & selectors.EVENT_READ:
             raw_opcode = self._recvall(sock, 8)
