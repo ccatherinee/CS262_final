@@ -8,7 +8,7 @@ class MRWordFreqCount(MRJob):
             yield word.lower(), 1
             
     def reducer(self, k, v): 
-        return sum(v)
+        yield sum(v)
 
 
 if __name__ == '__main__':
