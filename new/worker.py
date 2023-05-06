@@ -71,7 +71,7 @@ class Worker:
 
     def accept_worker_connection(self):
         conn, addr = self.lsock.accept() 
-        conn.setblocking(True) # TODO: blocking or non-blocking? things break with non-blocking
+        conn.setblocking(False) # TODO: blocking or non-blocking? things break with non-blocking on big data sets
         data = types.SimpleNamespace(addr=addr, write_to_worker_queue=queue.Queue())
         self.worker_sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
         print(f"Worker node accepted connection from {addr}")

@@ -62,7 +62,7 @@ class MRJob:
 
     def accept_worker_connection(self): 
         conn, addr = self.lsock.accept() 
-        conn.setblocking(True) # TODO: blocking or non-blocking? things break if non-blocking
+        conn.setblocking(False) # TODO: blocking or non-blocking? things break if non-blocking on big data sets
         data = types.SimpleNamespace(write_to_worker_queue=queue.Queue())
         self.sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
         self.worker_connections[addr] = conn
