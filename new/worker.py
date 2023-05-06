@@ -143,8 +143,8 @@ class Worker:
                 worker_port = struct.unpack('>I', self._recvall(self.master_sock, 4))[0]
                 self.request_intermediate_from.put((completed_map_task, worker_host, worker_port))
         if mask & selectors.EVENT_WRITE:
-            while not self.write_to_master_node_queue.empty(): 
-                self.master_sock.sendall(self.write_to_master_node_queue.get())
+            while not self.write_to_master_queue.empty(): 
+                self.master_sock.sendall(self.write_to_master_queue.get())
 
     def reduce_thread(self):
         print(f"Worker starting reduce task {self.reduce_task}/{self.R}")
