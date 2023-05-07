@@ -7,7 +7,6 @@ import queue
 import sys
 import errno
 from dill.source import getsource 
-from pathlib import Path
 from constants import * 
 from collections import defaultdict
 
@@ -109,7 +108,8 @@ class MRJob:
                     task = self.available_map_tasks.get()
                     print(f"Master node assigning map task {task}/{self.M} to worker node at {worker_addr}")
                     mapper_func_str = getsource(self.mapper).strip()
-                    map_task_input = Path(f"mr-input-{task}.txt").read_bytes() # map task input is one text file
+                    with open(f"mr-input-{task}.txt", "rb") as f:
+                        map_task_input = f.read().decode("utf-8-sig").encode("utf-8") # map task input is one text file
                     # send worker node map task number, number of map tasks, number of reduce tasks, mapper function, and map task input
                     data.write_to_worker_queue.put(struct.pack('>Q', MAP_TASK) + struct.pack('>Q', task) + struct.pack('>Q', self.M) + struct.pack('>Q', self.R) + struct.pack('>Q', len(mapper_func_str)) + mapper_func_str.encode() + struct.pack('>Q', len(map_task_input)) + map_task_input)
                     self.in_progress_map_tasks[worker_addr] = task

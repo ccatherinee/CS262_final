@@ -108,7 +108,7 @@ class Worker:
                         # read intermediate results from json file from socket, add to intermediate_results queue, to be read in reduce thread
                         completed_map_task = struct.unpack('>Q', self._recvall(sock, 8))[0]
                         intermediate_results_len = struct.unpack('>Q', self._recvall(sock, 8))[0]
-                        results = self._recvall(sock, intermediate_results_len).decode()
+                        results = self._recvall(sock, intermediate_results_len)
                         self.intermediate_results.put((completed_map_task, results))
                     else: # should never reach here
                         print("ERROR: Invalid opcode received from another worker node")

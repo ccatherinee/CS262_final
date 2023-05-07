@@ -7,7 +7,7 @@ class MRWordFreqCount(MRJob):
         # remove punctuation and make lowercase
         line = line.translate(str.maketrans('', '', punctuation))
         for word in line.split():
-            yield word.lower(), 1
+            yield word.lower().strip(), 1
             
     def reducer(self, k, v): 
         yield sum(v)
