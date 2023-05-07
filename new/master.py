@@ -16,6 +16,7 @@ class MRJob:
     def __init__(self, M, R):
         self.M, self.R = M, R # the number of map and reduce jobs respectively
         self.initial_delay = INITIAL_DELAY # whether to delay assigning tasks for 10 seconds to allow all workers to connect first, for testing purposes only
+        self.bytes_sent = self.bytes_received = 0 # number of bytes sent and received over the wire by master node
 
         self.worker_connections = {} # maps worker node address to socket connection
 
@@ -62,6 +63,7 @@ class MRJob:
                         self.initial_delay = False
                     done = self.service_worker_connection(key, mask) # service existing worker connection
                     if done:
+                        print(f"Master node received {self.bytes_received} bytes total and sent {self.bytes_sent} bytes total over the network.")
                         return # exit out of master.run() if all tasks are complete, returning control to user program
 
     # Accept a new, incoming worker connection to the master node's listening socket
@@ -135,9 +137,11 @@ class MRJob:
                 worker_listening_port = struct.unpack('>Q', self._recvall(sock, 8))[0]
                 self.completed_map_tasks_locations[completed_map_task] = (worker_addr[0], worker_listening_port)
                 self.completed_tasks += 1
+                msg = struct.pack('>Q', REDUCE_LOCATION_INFO) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(worker_addr[0])) + worker_addr[0].encode() + struct.pack('>Q', worker_listening_port)
                 # send workers currently working on reduce task the location of this map task's results
                 for reduce_worker_addr in self.in_progress_reduce_tasks:
-                    self.worker_connections[reduce_worker_addr].sendall(struct.pack('>Q', REDUCE_LOCATION_INFO) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(worker_addr[0])) + worker_addr[0].encode() + struct.pack('>Q', worker_listening_port))
+                    self.bytes_sent += len(msg)
+                    self.worker_connections[reduce_worker_addr].sendall(msg)
             elif opcode == REDUCE_COMPLETE: # worker node has completed a reduce task
                 completed_reduce_task = self.in_progress_reduce_tasks.pop(worker_addr)
                 print(f"Master node received completed reduce task {completed_reduce_task} from worker node at {worker_addr}")
@@ -145,13 +149,16 @@ class MRJob:
                 if self.completed_tasks == self.M + self.R: # all tasks completed
                     for conn in self.worker_connections.values(): # tell all worker nodes to terminate
                         conn.sendall(struct.pack('>Q', ALL_TASKS_COMPLETE))
+                        self.bytes_sent += 8
                         self.sel.unregister(conn)
                         conn.close()
                     done = True # tell master.run to terminate
 
         if mask & selectors.EVENT_WRITE: # worker node is ready to receive data
             if not data.write_to_worker_queue.empty(): 
-                sock.sendall(data.write_to_worker_queue.get()) # send data to worker node
+                msg = data.write_to_worker_queue.get()
+                sock.sendall(msg) # send data to worker node
+                self.bytes_sent += len(msg)
 
         return done # return whether master.run should terminate / whether all tasks are done
 
@@ -165,6 +172,7 @@ class MRJob:
             except ConnectionResetError: 
                 return None
             data.extend(packet)
+        self.bytes_received += n
         return data 
 
     

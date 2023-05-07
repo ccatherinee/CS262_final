@@ -19,6 +19,8 @@ from collections import defaultdict
 class Worker: 
     def __init__(self, die_map=False, die_reduce=False): 
         self.die_map, self.die_reduce = die_map, die_reduce # whether to die in map or reduce task, for testing purposes only
+        self.bytes_sent = self.bytes_received = 0 # number of bytes sent and received over the network by this worker node, respectively
+        
         self.M = self.R = None # number of map and reduce tasks, respectively
         self.mapper = self.reducer = None  # map and reduce functions, respectively
 
@@ -70,6 +72,7 @@ class Worker:
                 elif key.fileobj == self.master_sock:
                     done = self.service_master_connection(key, mask)
                     if done:
+                        print(f"Worker node received {self.bytes_received} bytes total and sent {self.bytes_sent} bytes total over the network.")
                         return # exit worker node process if master node down or sent ALL_TASKS_COMPLETE 
 
     # Accept new, incoming worker connection to this worker node's listening socket
@@ -120,7 +123,9 @@ class Worker:
                 sock, data = key.fileobj, key.data
                 if mask & selectors.EVENT_WRITE:
                     if not data.write_to_worker_queue.empty():
-                        sock.sendall(data.write_to_worker_queue.get())
+                        msg = data.write_to_worker_queue.get()
+                        sock.sendall(msg)
+                        self.bytes_sent += len(msg)
 
     def service_master_connection(self, key, mask):
         if mask & selectors.EVENT_READ:
@@ -138,6 +143,7 @@ class Worker:
                 # sleep for 1 second before requesting task again
                 time.sleep(1)
                 self.master_sock.sendall(struct.pack('>Q', REQUEST_TASK))
+                self.bytes_sent += 8
             elif opcode == MAP_TASK:
                 self.map_task = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0] # get map task number
                 self.M = struct.unpack('>Q', self._recvall(self.master_sock, 8))[0]
@@ -174,7 +180,9 @@ class Worker:
                 print("ERROR: Invalid opcode received from master node")
         if mask & selectors.EVENT_WRITE:
             while not self.write_to_master_queue.empty(): 
-                self.master_sock.sendall(self.write_to_master_queue.get())
+                msg = self.write_to_master_queue.get()
+                self.master_sock.sendall(msg)
+                self.bytes_sent += len(msg)
         return False # signal that worker node should not exit
 
     # Reduce thread for worker node, started when worker node receives REDUCE_TASK opcode from master node
@@ -257,6 +265,7 @@ class Worker:
             except ConnectionResetError: 
                 return None
             data.extend(packet)
+        self.bytes_received += n
         return data 
 
 # Sockets and network buffers behave differently on macOS compared to Linux
