@@ -1,7 +1,7 @@
 from master import MRJob
 
 
-# Example MapReduce job for ... in some documents mr-input-1.txt through mr-input-R.txt
+# Example MapReduce job for counting word frequencies in some documents mr-input-1.txt through mr-input-4.txt
 class MRWordFreqCount(MRJob):
     def mapper(self, _, line):
         for word in line.split():
