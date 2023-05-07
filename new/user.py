@@ -18,4 +18,4 @@ if __name__ == '__main__':
     starttime = time.time()
     MRWordFreqCount(M=25, R=5).run()
     print("User's MapReduce job completed! User program can continue now :)")
-    print(f"Took {time.time - starttime} seconds to finish!")
+    print(f"Took {time.time() - starttime} seconds to finish!")
