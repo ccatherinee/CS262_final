@@ -1,3 +1,6 @@
+# Introduction
+This is a MapReduce Python system/library. The newest version of our code can be found in the new folder.
+
 # Requirements
 Install the latest version of Python and the dill module (an extension of Python's pickle module) via pip install dill.
 

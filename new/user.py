@@ -14,5 +14,5 @@ class MRWordFreqCount(MRJob):
 
 
 if __name__ == '__main__':
-    MRWordFreqCount(M=4, R=2).run() # 4 map tasks, 2 reduce tasks
+    MRWordFreqCount(M=10, R=3).run() # 10 map tasks, 3 reduce tasks
     print("User's MapReduce job completed! User program can continue now :)")
