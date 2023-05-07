@@ -204,8 +204,11 @@ class Worker:
                     try:
                         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         s.connect((worker_host, worker_port))
-                        s.sendall(struct.pack('>Q', MAP_RESULTS_REQUEST) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', self.reduce_task))
+                        request_queue = queue.Queue()
+                        request_queue.put(struct.pack('>Q', MAP_RESULTS_REQUEST) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', self.reduce_task))
+                        request_write = types.SimpleNamespace(write_to_worker_queue=request_queue)
                         self.worker_read_sel.register(s, selectors.EVENT_READ, data=None)
+                        self.worker_write_sel.register(s, selectors.EVENT_WRITE, data=request_write)
                         print(f"Worker node sent request for results from map task {completed_map_task}")
                     except (ConnectionRefusedError, TimeoutError): # other worker node is down
                         pass

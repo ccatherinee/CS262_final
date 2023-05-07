@@ -18,6 +18,6 @@ MAP_RESULTS = 12
 
 
 # General constants
-MASTER_HOST = "192.168.1.4" # THIS MUST BE SET TO USER'S IP ADDRESS
-MASTER_PORT = 12345
+MASTER_HOST = "10.250.124.104" # THIS MUST BE SET TO USER'S IP ADDRESS
+MASTER_PORT = 12355
 INITIAL_DELAY = False # whether to delay assigning tasks in master node for 10 seconds to allow all workers to connect first, for testing purposes only
