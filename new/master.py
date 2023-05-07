@@ -11,6 +11,7 @@ from pathlib import Path
 from constants import * 
 from collections import defaultdict
 
+
 # MapReduce Job class, i.e., the master node class
 class MRJob: 
     def __init__(self, M, R):
@@ -153,8 +154,6 @@ class MRJob:
                 sock.sendall(data.write_to_worker_queue.get()) # send data to worker node
 
         return done # return whether master.run should terminate / whether all tasks are done
-
-            
 
     def _recvall(self, sock, n): # receives exactly n bytes from socket, returning None if connection broken
         data = bytearray() 
