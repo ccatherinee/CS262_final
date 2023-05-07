@@ -1,5 +1,4 @@
 import time 
-import pickle 
 import selectors 
 import socket
 import struct 
@@ -10,7 +9,6 @@ import random
 import sys
 import json
 import os
-from dill.source import getsource 
 from pathlib import Path
 from constants import * 
 from collections import defaultdict
@@ -88,7 +86,7 @@ class Worker:
 
     def accept_worker_connection(self):
         conn, addr = self.lsock.accept() 
-        conn.setblocking(False) # TODO: make non-blocking work on big datasets
+        conn.setblocking(False)
         worker_queue = queue.Queue()
         data_read = types.SimpleNamespace(addr=addr, write_to_worker_queue=worker_queue)
         data_write = types.SimpleNamespace(addr=addr, write_to_worker_queue=worker_queue)
@@ -131,9 +129,7 @@ class Worker:
                 sock, data = key.fileobj, key.data
                 if mask & selectors.EVENT_WRITE:
                     if not data.write_to_worker_queue.empty():
-                        # print("HERE1")
-                        sock.sendall(data.write_to_worker_queue.get()) # TODO: blocking here on like second map task results for large data sets - network buffer full?; erring here if non-blocking
-                        # print("HERE2")
+                        sock.sendall(data.write_to_worker_queue.get())
 
     def service_master_connection(self, key, mask):
         if mask & selectors.EVENT_READ:
