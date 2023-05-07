@@ -15,6 +15,21 @@ from pathlib import Path
 from constants import * 
 from collections import defaultdict
 
+import errno
+#sockets seem to behave differently on mac than linux
+#this is a terrible hack to get the code working on mac
+if "darwin" == sys.platform: 
+    def socket_socket_sendall(self, data):
+        while len(data) > 0:
+            try:
+                bytes_sent = self.send(data)
+                data = data[bytes_sent:]
+            except socket.error as e:
+                if e.errno == errno.EAGAIN:
+                    time.sleep(0.1)
+                else:
+                    raise e
+    socket.socket.sendall = socket_socket_sendall
  
 class Worker: 
     def __init__(self, die_map=False, die_reduce=False): 
@@ -51,12 +66,14 @@ class Worker:
         self.sel.register(self.lsock, selectors.EVENT_READ, data=None) 
 
         # selector for worker sockets once they have connected
-        self.worker_sel = selectors.DefaultSelector()
+        self.worker_read_sel = selectors.DefaultSelector()
+        self.worker_write_sel = selectors.DefaultSelector()
 
         self.write_to_master_queue.put(struct.pack('>Q', REQUEST_TASK)) # request a map or reduce task from master node
 
         # thread for servicing other workers' requests to current worker
-        threading.Thread(target=self.service_worker_connection, daemon=True).start() # daemon thread exits when main worker thread exits
+        threading.Thread(target=self.read_worker_connection, daemon=True).start() # daemon thread exits when main worker thread exits
+        threading.Thread(target=self.write_worker_connection, daemon=True).start()
 
     def run(self): 
         while True: 
@@ -72,19 +89,23 @@ class Worker:
     def accept_worker_connection(self):
         conn, addr = self.lsock.accept() 
         conn.setblocking(False) # TODO: make non-blocking work on big datasets
-        data = types.SimpleNamespace(addr=addr, write_to_worker_queue=queue.Queue())
-        self.worker_sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
+        worker_queue = queue.Queue()
+        data_read = types.SimpleNamespace(addr=addr, write_to_worker_queue=worker_queue)
+        data_write = types.SimpleNamespace(addr=addr, write_to_worker_queue=worker_queue)
+        self.worker_read_sel.register(conn, selectors.EVENT_READ, data=data_read)
+        self.worker_write_sel.register(conn, selectors.EVENT_WRITE, data=data_write)
         print(f"Worker node accepted connection from {addr}")
 
-    def service_worker_connection(self):
+    def read_worker_connection(self):
         while True:
-            events = self.worker_sel.select(timeout=None)
+            events = self.worker_read_sel.select(timeout=None)
             for key, mask in events:
                 sock, data = key.fileobj, key.data
                 if mask & selectors.EVENT_READ:
                     raw_opcode = self._recvall(sock, 8)
                     if raw_opcode is None: # other worker node has disconnected
-                        self.worker_sel.unregister(sock)
+                        self.worker_read_sel.unregister(sock)
+                        self.worker_write_sel.unregister(sock)
                         sock.close()
                         continue
                     opcode = struct.unpack('>Q', raw_opcode)[0]
@@ -102,6 +123,12 @@ class Worker:
                         self.intermediate_results.put((completed_map_task, results))
                     else:
                         print("ERROR: Invalid opcode received from another worker node")
+                        
+    def write_worker_connection(self):
+        while True:
+            events = self.worker_write_sel.select(timeout=None)
+            for key,mask in events:
+                sock, data = key.fileobj, key.data
                 if mask & selectors.EVENT_WRITE:
                     if not data.write_to_worker_queue.empty():
                         # print("HERE1")
@@ -178,7 +205,7 @@ class Worker:
                         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         s.connect((worker_host, worker_port))
                         s.sendall(struct.pack('>Q', MAP_RESULTS_REQUEST) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', self.reduce_task))
-                        self.worker_sel.register(s, selectors.EVENT_READ, data=None)
+                        self.worker_read_sel.register(s, selectors.EVENT_READ, data=None)
                         print(f"Worker node sent request for results from map task {completed_map_task}")
                     except (ConnectionRefusedError, TimeoutError): # other worker node is down
                         pass

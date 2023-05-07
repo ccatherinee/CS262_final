@@ -12,6 +12,23 @@ from pathlib import Path
 from constants import * 
 from collections import defaultdict
 
+import sys
+import errno
+#sockets seem to behave differently on mac than linux
+#this is a terrible hack to get the code working on mac
+if "darwin" == sys.platform: 
+    def socket_socket_sendall(self, data):
+        while len(data) > 0:
+            try:
+                bytes_sent = self.send(data)
+                data = data[bytes_sent:]
+            except socket.error as e:
+                if e.errno == errno.EAGAIN:
+                    time.sleep(0.1)
+                    print("hi")
+                else:
+                    raise e
+    socket.socket.sendall = socket_socket_sendall
 
 class MRJob: 
     def __init__(self, M, R):
