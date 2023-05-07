@@ -1,6 +1,8 @@
 # Requirements
 Install the latest version of Python and the dill module (an extension of Python's pickle module) via pip install dill.
 
+export PYTHONHASHSEED=0 in terminal before running anything, on both the user machine and any of the worker machines. This is to ensure the hash function used is consistent across machines, disabling the randomization that Python uses for its built-in hash function.
+
 # How to Run
 The newest version of our design/code lies in the new folder. From there, use:
 python user.py to start up the user program invoking MapReduce and to start up the master node.

@@ -16,7 +16,7 @@ from collections import defaultdict
 class MRJob: 
     def __init__(self, M, R):
         self.M, self.R = M, R
-        self.initial_delay = True # whether to delay assigning tasks for 10 seconds to allow all workers to connect first
+        self.initial_delay = True # whether to delay assigning tasks for 10 seconds to allow all workers to connect first, for demonstration purposes only
 
         self.worker_connections = {} # maps worker node address to socket connection
 
