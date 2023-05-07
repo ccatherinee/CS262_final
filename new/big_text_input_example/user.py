@@ -1,9 +1,11 @@
 from master import MRJob
+from constants import *
 
-
-# Example MapReduce job for counting word frequencies in some documents mr-input-1.txt through mr-input-4.txt
+# Example MapReduce job for word counting in some (large, complicated) documents mr-input-1.txt through mr-input-R.txt
 class MRWordFreqCount(MRJob):
     def mapper(self, _, line):
+        # remove punctuation and make lowercase
+        line = line.translate(str.maketrans('', '', punctuation))
         for word in line.split():
             yield word.lower(), 1
             

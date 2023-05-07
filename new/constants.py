@@ -1,3 +1,7 @@
+# Any imports used in the map and reduce function must be imported here
+from string import *
+
+
 # Opcodes for the wire protocol
 
 # Sent from workers to master
