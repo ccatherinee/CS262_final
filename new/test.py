@@ -13,7 +13,7 @@ import worker
 
 
 class TestWorker(unittest.TestCase): 
-    """
+    
     @mock.patch("builtins.print")
     @mock.patch("selectors.DefaultSelector")
     @mock.patch("socket.socket")
@@ -28,7 +28,7 @@ class TestWorker(unittest.TestCase):
         write_sel = mock_selector.return_value 
         write_sel.register.assert_called_with(mock_conn, selectors.EVENT_WRITE, data=types.SimpleNamespace(addr=("hostasdf", 1234), write_to_worker_queue=ANY))
         # read_sel.register.assert_called_with(mock_conn, selectors.EVENT_READ, data=types.SimpleNamespace(addr=("hostasdf", 1234), write_to_worker_queue=ANY))
-    """
+    
 
     @mock.patch("socket.socket")
     @mock.patch("struct.unpack")
