@@ -17,7 +17,7 @@ from collections import defaultdict
  
 # Map and reduce worker node class
 class Worker: 
-    def __init__(self, die_map=False, die_reduce=False): 
+    def __init__(self, die_map=False, die_reduce=False, testing=False): 
         self.die_map, self.die_reduce = die_map, die_reduce # whether to die in map or reduce task, for testing purposes only
         self.bytes_sent = self.bytes_received = 0 # number of bytes sent and received over the network by this worker node, respectively
         
@@ -42,6 +42,7 @@ class Worker:
         self.lsock.setblocking(False) 
         print(f"Worker node listening at {self.lsock.getsockname()}")
 
+       
         # socket initiates connection to master node
         self.master_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.master_sock.setblocking(True)
@@ -57,10 +58,10 @@ class Worker:
         self.worker_write_sel = selectors.DefaultSelector()
 
         self.write_to_master_queue.put(struct.pack('>Q', REQUEST_TASK)) # request a map or reduce task from master node
-
-        # thread for reading from and writing to other worker nodes
-        threading.Thread(target=self.read_worker_connection, daemon=True).start() # daemon thread exits when main worker process/thread exits
-        threading.Thread(target=self.write_worker_connection, daemon=True).start()
+        if not testing: 
+            # thread for reading from and writing to other worker nodes
+            threading.Thread(target=self.read_worker_connection, daemon=True).start() # daemon thread exits when main worker process/thread exits
+            threading.Thread(target=self.write_worker_connection, daemon=True).start()
 
     # Main thread of worker node: accepts new worker connections and services master node connection
     def run(self): 

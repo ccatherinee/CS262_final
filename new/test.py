@@ -8,6 +8,46 @@ import constants
 import struct 
 import queue 
 import types 
+import unittest 
+import worker
+
+
+class TestWorker(unittest.TestCase): 
+    """
+    @mock.patch("builtins.print")
+    @mock.patch("selectors.DefaultSelector")
+    @mock.patch("socket.socket")
+    def test_accept_worker_connection(self, mock_socket, mock_selector, mock_print): 
+        worker_1 = worker.Worker(testing=True)
+        mock_conn = mock.Mock(name="conn")
+        mock_socket.return_value.accept.return_value = (mock_conn, ("hostasdf", 1234))
+        worker_1.accept_worker_connection()
+        mock_conn.setblocking.assert_called_once_with(False)
+
+        read_sel = mock_selector.return_value 
+        write_sel = mock_selector.return_value 
+        write_sel.register.assert_called_with(mock_conn, selectors.EVENT_WRITE, data=types.SimpleNamespace(addr=("hostasdf", 1234), write_to_worker_queue=ANY))
+        # read_sel.register.assert_called_with(mock_conn, selectors.EVENT_READ, data=types.SimpleNamespace(addr=("hostasdf", 1234), write_to_worker_queue=ANY))
+    """
+
+    @mock.patch("socket.socket")
+    @mock.patch("struct.unpack")
+    @mock.patch("worker.Worker")
+    @mock.patch("selectors.DefaultSelector")
+    def test_service_master_connection(self, mock_selector, mock_worker, mock_unpack, mock_socket): 
+        mock_key = mock.Mock(name="key")
+        mock_sock = mock.Mock(name="sock")
+        mock_key.fileobj = mock_sock
+
+        mock_master = mock_socket.return_value
+        mock_worker.master_sock = mock_master
+        mock_unpack.return_value = (constants.ALL_TASKS_COMPLETE,)
+
+        mock_worker.service_master_connection(mock_key, selectors.EVENT_READ)
+        mock_selector.return_value.unregister.assert_called_with(mock_worker.master_sock)
+        # mock_worker.master_sock.return_value.close.assert_called_once()
+        
+
 
 class TestMRJob(unittest.TestCase): 
     @mock.patch("builtins.print")
@@ -141,6 +181,7 @@ class TestMRJob(unittest.TestCase):
         
 
         mock_unpack.return_value = (constants.REDUCE_COMPLETE)
-        
+
+
 if __name__ == '__main__':
     unittest.main()
