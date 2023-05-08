@@ -1,0 +1,12 @@
+apple	1
+air	2
+axe	2
+baby	5
+ball	1
+berry	1
+jug	1
+joker	6
+leopard	5
+lotus	2
+ostrich	1
+wheel	1

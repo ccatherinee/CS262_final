@@ -1,0 +1,14 @@
+airplane	2
+bat	1
+jeep	1
+jacket	1
+lion	1
+orange	3
+otter	3
+ox	1
+milk	1
+mouse	1
+mango	5
+water	1
+watch	1
+wood	1
