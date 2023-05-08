@@ -39,7 +39,7 @@ class TestMRJob(unittest.TestCase):
     @mock.patch("selectors.DefaultSelector")
     @mock.patch("struct.unpack")
     @mock.patch("master.MRJob._recvall")
-    def test_service_worker_connection(self, mock_recvall, mock_unpack, mock_selector): 
+    def test_service_worker_connection_all(self, mock_recvall, mock_unpack, mock_selector): 
         self.master_node = master.MRJob(2, 2)
         self.master_node.run(True)
         mock_key_1 = mock.Mock(name="key1")
