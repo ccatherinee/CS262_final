@@ -8,9 +8,9 @@ Before running anything using Python, set the environment variable PYTHONHASHSEE
 
 (Throughout this README, we will refer to the user program as being in the file user.py. The user program does not strictly have to be named user.py - the following directions apply to any other user program file name too.)
 
-Ensure mr-input-1.txt through mr-input-M.txt are the map task input splits, where M is the number of map tasks as defined in the user program, is in the same folder as the user program user.py.
+Ensure mr-input-1.txt through mr-input-M.txt are the map task input splits, where M is the number of map tasks as defined in the user program, and are in the same folder as the user program user.py.
 
-In the user program user.py, the map and reduce functions must return iterables / generators (e.g., a list, or generated values via yield like in the given example code). Additionally, any imported libraries / functions that the user-defined map and reduce function use must be imported in constants.py. On the master machine, the relevant files (master.py, constants.py, user.py) should live in the same directory, and on the worker machines, the relevant files (worker.py, constants.py) should also live in the same directory.
+In the user program user.py, the map and reduce functions must return iterables / generators (e.g., a list, or generated values via yield like in the given example code). Additionally, any imported libraries / functions that the user-defined map and reduce function use must be imported in constants.py. On the master machine, the required/relevant files (master.py, constants.py, user.py) should live in the same directory, and on the worker machines, the required/relevant files (worker.py, constants.py) should also live in the same directory.
 
 You must set MASTER_HOST to your machine's IP address before running the MapReduce job, and set MASTER_PORT to whatever port you want your master node to run on.
 
