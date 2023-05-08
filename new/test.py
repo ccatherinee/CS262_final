@@ -1,193 +1,146 @@
-import time 
+from unittest import mock 
+from unittest.mock import patch, call, ANY
+import socket 
 import selectors 
-import socket
+import user 
+import master
+import constants 
 import struct 
-import types 
 import queue 
-import sys
-import errno
-from dill.source import getsource 
-from constants import * 
-from collections import defaultdict
+import types 
 
+class TestMRJob(unittest.TestCase): 
+    @mock.patch("builtins.print")
+    @mock.patch("time.sleep")
+    @mock.patch("selectors.DefaultSelector")
+    @mock.patch("socket.socket")
+    def test_run(self, mock_socket, mock_selector, mock_sleep, mock_print): 
+        self.master_node = master.MRJob(4, 2)
+        self.master_node.run(True)
+        mock_socket.return_value.bind.assert_called_once_with((constants.MASTER_HOST, constants.MASTER_PORT))
 
-# MapReduce Job class, i.e., the master node class
-class MRJob: 
-    def __init__(self, M, R):
-        self.M, self.R = M, R # the number of map and reduce jobs respectively
-        self.initial_delay = INITIAL_DELAY # whether to delay assigning tasks for 10 seconds to allow all workers to connect first, for testing purposes only
-        self.bytes_sent = self.bytes_received = 0 # number of bytes sent and received over the wire by master node
+        mock_socket.return_value.listen.assert_called_once()
+        mock_socket.return_value.setblocking.assert_called_once_with(False)
+        mock_selector.return_value.register.assert_called_once_with(mock_socket.return_value, selectors.EVENT_READ, data=None)
 
-        self.worker_connections = {} # maps worker node address to socket connection
+    @mock.patch("builtins.print")
+    @mock.patch("selectors.DefaultSelector")
+    @mock.patch("socket.socket")
+    def test_accept_worker_connection(self, mock_socket, mock_selector, mock_print): 
+        self.master_node = master.MRJob(4, 2)
+        self.master_node.run(True)
+        mock_conn = mock.Mock(name="conn")
+        mock_socket.return_value.accept.return_value = (mock_conn, ("hostasdf", 1234))
+        self.master_node.accept_worker_connection()
+        mock_socket.return_value.setblocking.assert_called_once_with(False)
+        mock_selector.return_value.register.assert_called_with(mock_conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=types.SimpleNamespace(write_to_worker_queue=ANY, worker_addr=("hostasdf", 1234)))
+        self.assertEqual(self.master_node.worker_connections, {("hostasdf", 1234): mock_conn})
 
-        self.available_map_tasks = queue.Queue() # map tasks that are ready to be assigned to workers
-        self.available_reduce_tasks = queue.Queue() # reduce tasks that are ready to be assigned to workers
-        # initially, all M + R jobs are available
-        for i in range(1, M + 1):
-            self.available_map_tasks.put(i)
-        for i in range(1, R + 1):
-            self.available_reduce_tasks.put(i)
+    @mock.patch("struct.unpack")
+    @mock.patch("master.MRJob._recvall")
+    def test_service_worker_connection(self, mock_recvall, mock_unpack): 
+        self.master_node = master.MRJob(2, 2)
+        self.master_node.run(True)
+        mock_key_1 = mock.Mock(name="key1")
+        mock_key_2 = mock.Mock(name="key2")
+        mock_key_3 = mock.Mock(name="key3")
+        mock_sock_1 = mock.Mock(name="sock1")
+        mock_sock_2 = mock.Mock(name="sock2")
+        mock_sock_3 = mock.Mock(name="sock3")
+        mock_key_1.fileobj = mock_sock_1
+        mock_key_2.fileobj = mock_sock_2
+        mock_key_3.fileobj = mock_sock_3
+        self.master_node.worker_connections[('host1',1234)]=mock_sock_1
+        self.master_node.worker_connections[('host2',4321)]=mock_sock_2
+        self.master_node.worker_connections[('host3',2143)]=mock_sock_3
+        mock_key_1.data.write_to_worker_queue = queue.Queue()
+        mock_key_2.data.write_to_worker_queue = queue.Queue()
+        mock_key_3.data.write_to_worker_queue = queue.Queue()
+        mock_key_1.data.worker_addr = ('host1',1234)
+        mock_key_2.data.worker_addr = ('host2',4321)
+        mock_key_3.data.worker_addr = ('host3',2143)
+        self.assertEqual(self.master_node.available_map_tasks.qsize(), 2)
+        self.assertEqual(self.master_node.available_reduce_tasks.qsize(), 2)
 
-        self.in_progress_map_tasks = {} # maps worker node address to map task number
-        self.in_progress_reduce_tasks = {} # maps worker node address to reduce task number
+        #map tasks available, first two workers get map tasks, last worker gets reduce task
+        mock_unpack.return_value = (constants.REQUEST_TASK,)
+        self.master_node.service_worker_connection(mock_key_1, selectors.EVENT_READ)
+        self.assertEqual(self.master_node.available_map_tasks.qsize(), 1)
+        self.assertEqual(self.master_node.in_progress_map_tasks, {mock_key_1.data.worker_addr: 1})
+        self.assertEqual(mock_key_1.data.write_to_worker_queue.qsize(), 1)
+        self.assertEqual(self.master_node.completed_map_tasks, {})
+        self.master_node.service_worker_connection(mock_key_1, selectors.EVENT_WRITE)
+        self.assertEqual(mock_key_1.data.write_to_worker_queue.qsize(), 0)
+        self.assertEqual(self.master_node.completed_map_tasks, {})
+        self.assertEqual(self.master_node.completed_tasks, 0)
 
-        self.completed_map_tasks = defaultdict(list) # maps worker node address to list of completed map task numbers
-        self.completed_map_tasks_locations = {} # maps completed map task numbers to worker node LISTENING SOCKET address who completed it
-        self.completed_tasks = 0 # number of total completed tasks, out of M + R
+        self.master_node.service_worker_connection(mock_key_2, selectors.EVENT_READ)
+        self.assertEqual(self.master_node.available_map_tasks.qsize(), 0)
+        self.assertEqual(self.master_node.in_progress_map_tasks, {mock_key_1.data.worker_addr: 1, mock_key_2.data.worker_addr: 2})
+        self.assertEqual(mock_key_2.data.write_to_worker_queue.qsize(), 1)
+        self.assertEqual(self.master_node.completed_map_tasks, {})
+        self.master_node.service_worker_connection(mock_key_2, selectors.EVENT_WRITE)
+        self.assertEqual(mock_key_2.data.write_to_worker_queue.qsize(), 0)
+        self.assertEqual(self.master_node.completed_map_tasks, {})
+        self.assertEqual(self.master_node.completed_tasks, 0)
         
-    def mapper(self, key, value): # map function, overwritten by user
-        return
-    
-    def reducer(self, key, value): # reduce function, overwritten by user
-        return
-    
-    # Main thread of master node: sets up listening socket and communicates with worker nodes
-    def run(self, testing=False): 
-        self.lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # listening socket, through which workers connect to master
-        self.lsock.bind((MASTER_HOST, MASTER_PORT)) # run master node on user machine
-        self.lsock.listen() 
-        self.lsock.setblocking(False) 
-        print(f"Master node listening at {self.lsock.getsockname()}")
+        self.master_node.service_worker_connection(mock_key_3, selectors.EVENT_READ)
+        self.assertEqual(self.master_node.available_map_tasks.qsize(), 0)
+        self.assertEqual(self.master_node.available_reduce_tasks.qsize(), 1)
+        self.assertEqual(self.master_node.in_progress_map_tasks, {mock_key_1.data.worker_addr: 1, mock_key_2.data.worker_addr: 2})
+        self.assertEqual(mock_key_3.data.write_to_worker_queue.qsize(),1)
+        self.assertEqual(self.master_node.completed_map_tasks, {})
+        self.master_node.service_worker_connection(mock_key_3, selectors.EVENT_WRITE)
+        self.assertEqual(mock_key_2.data.write_to_worker_queue.qsize(), 0)
+        self.assertEqual(self.master_node.completed_map_tasks, {})
+        self.assertEqual(self.master_node.completed_tasks, 0)
 
-        self.sel = selectors.DefaultSelector() # selector for listening socket and worker sockets
-        self.sel.register(self.lsock, selectors.EVENT_READ, data=None) 
-        if not testing:
-            while True: 
-                events = self.sel.select(timeout=None)
-                for key, mask in events:
-                    if key.data is None: 
-                        self.accept_worker_connection() # accept new worker connection
-                    else: 
-                        if self.initial_delay:
-                            time.sleep(10) # delay initial assigning of tasks for 10 seconds to allow all workers to connect first
-                            self.initial_delay = False
-                        done = self.service_worker_connection(key, mask) # service existing worker connection
-                        if done:
-                            print(f"Master node received {self.bytes_received} bytes total and sent {self.bytes_sent} bytes total over the network.")
-                            return # exit out of master.run() if all tasks are complete, returning control to user program
+        #one worker finishes map task and requests the final reduce task
+        mock_unpack.side_effect = [(constants.MAP_COMPLETE,), (22222,)]
+        self.master_node.service_worker_connection(mock_key_1, selectors.EVENT_READ)
+        self.assertEqual(self.master_node.in_progress_map_tasks, {mock_key_2.data.worker_addr:2})
+        self.assertEqual(self.master_node.completed_map_tasks, {mock_key_1.data.worker_addr:[1]})
+        self.assertEqual(mock_key_1.data.write_to_worker_queue.qsize(), 0)
+        self.assertEqual(self.master_node.completed_map_tasks_locations[1], ('host1', 22222))
+        self.assertEqual(self.master_node.completed_tasks, 1)
+        mock_sock_3.sendall.assert_called_with(b'\x00\x00\x00\x00\x00\x00\x00\x08\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x05host1\x00\x00\x00\x00\x00\x00V\xce')
+ 
+        mock_unpack.return_value = (constants.REQUEST_TASK,)
+        self.master_node.service_worker_connection(mock_key_1, selectors.EVENT_READ)
+        self.assertEqual(self.master_node.available_map_tasks.qsize(), 0)
+        self.assertEqual(self.master_node.available_reduce_tasks.qsize(), 1)
+        self.assertEqual(self.master_node.in_progress_map_tasks, {mock_key_1.data.worker_addr: 1, mock_key_2.data.worker_addr: 2})
+        self.assertEqual(mock_key_3.data.write_to_worker_queue.qsize(),1)
+        self.assertEqual(self.master_node.completed_map_tasks, {})
+        self.master_node.service_worker_connection(mock_key_3, selectors.EVENT_WRITE)
+        self.assertEqual(mock_key_2.data.write_to_worker_queue.qsize(), 0)
+        self.assertEqual(self.master_node.completed_map_tasks, {})
+        self.assertEqual(self.master_node.completed_tasks, 0)
+        
+        #reduce task available
+        self.master_node.service_worker_connection(mock_key_1, selectors.EVENT_READ)
+        self.assertEqual(self.master_node.available_reduce_tasks.qsize(), 0)
+        self.assertEqual(self.master_node.in_progress_map_tasks, {mock_key_1.data.worker_addr: 1})
+        self.assertEqual(self.master_node.in_progress_reduce_tasks, {mock_key_1.data.worker_addr: 1})
+        self.assertEqual(mock_key_1.data.write_to_worker_queue.qsize(), 1)
+        self.assertEqual(self.master_node.completed_tasks, 0)
+        
+        self.master_node.service_worker_connection(mock_key_1, selectors.EVENT_WRITE)
+        self.assertEqual(mock_key_1.data.write_to_worker_queue.qsize(), 0)
+        self.assertEqual(self.master_node.completed_map_tasks, {})
 
-    # Accept a new, incoming worker connection to the master node's listening socket
-    def accept_worker_connection(self): 
-        conn, addr = self.lsock.accept() 
-        conn.setblocking(False)
-        # store queue of messages to send to worker node and worker node address in data field of selector
-        data = types.SimpleNamespace(write_to_worker_queue=queue.Queue(), worker_addr=addr)
-        self.sel.register(conn, selectors.EVENT_READ | selectors.EVENT_WRITE, data=data)
-        self.worker_connections[addr] = conn
-        print(f"Master node accepted connection from worker node at {addr}")
+        #no tasks available
+        self.master_node.service_worker_connection(mock_key_1, selectors.EVENT_READ)
+        self.assertEqual(self.master_node.available_map_tasks.qsize(), 0)
+        self.assertEqual(self.master_node.available_reduce_tasks.qsize(), 0)
+        self.assertEqual(self.master_node.in_progress_map_tasks, {mock_key_1.data.worker_addr: 1})
+        self.assertEqual(self.master_node.in_progress_reduce_tasks, {mock_key_1.data.worker_addr: 1})
+        self.assertEqual(self.master_node.in_progress_map_tasks, {mock_key_1.data.worker_addr: 1})
+        self.assertEqual(mock_key_1.data.write_to_worker_queue.qsize(), 1)
 
-    # Service an existing worker connection, i.e., receive and send messages to worker node
-    def service_worker_connection(self, key, mask):
-        sock, data = key.fileobj, key.data
-        worker_addr = data.worker_addr
-        done = False # whether all tasks are complete
-        if mask & selectors.EVENT_READ:
-            raw_opcode = self._recvall(sock, 8)
-            if raw_opcode is None: 
-                print(f"Master node detected worker node at {worker_addr} has disconnected")
-                self.worker_connections.pop(worker_addr) # remove worker node from list of worker nodes
-                # re-make available map tasks that were completed by disconnected worker node
-                for task in self.completed_map_tasks[worker_addr]:
-                    self.available_map_tasks.put(task)
-                    self.completed_map_tasks_locations.pop(task)
-                    self.completed_tasks -= 1
-                self.completed_map_tasks.pop(worker_addr)
-                # re-make available map and reduce tasks that were in progress by disconnected worker node
-                if worker_addr in self.in_progress_map_tasks:
-                    self.available_map_tasks.put(self.in_progress_map_tasks[worker_addr])
-                    self.in_progress_map_tasks.pop(worker_addr)
-                if worker_addr in self.in_progress_reduce_tasks:
-                    self.available_reduce_tasks.put(self.in_progress_reduce_tasks[worker_addr])
-                    self.in_progress_reduce_tasks.pop(worker_addr)
-                # remove the disconnected worker node from the selector
-                self.sel.unregister(sock)
-                sock.close() 
-                return done
-            
-            opcode = struct.unpack('>Q', raw_opcode)[0]
-            if opcode == REQUEST_TASK: # worker node requests a task
-                if not self.available_map_tasks.empty(): # assign available map task to worker node
-                    task = self.available_map_tasks.get()
-                    print(task)
-                    print(f"Master node assigning map task {task}/{self.M} to worker node at {worker_addr}")
-                    mapper_func_str = getsource(self.mapper).strip()
-                    with open(f"mr-input-{task}.txt", "rb") as f:
-                        map_task_input = f.read().decode("utf-8-sig").encode("utf-8") # map task input is one text file
-                    # send worker node map task number, number of map tasks, number of reduce tasks, mapper function, and map task input
-                    data.write_to_worker_queue.put(struct.pack('>Q', MAP_TASK) + struct.pack('>Q', task) + struct.pack('>Q', self.M) + struct.pack('>Q', self.R) + struct.pack('>Q', len(mapper_func_str)) + mapper_func_str.encode() + struct.pack('>Q', len(map_task_input)) + map_task_input)
-                    self.in_progress_map_tasks[worker_addr] = task
-                elif not self.available_reduce_tasks.empty(): # assign available reduce task to worker node
-                    task = self.available_reduce_tasks.get()
-                    print(f"Master node assigning reduce task {task}/{self.R} to worker node at {worker_addr}")
-                    reducer_func_str = getsource(self.reducer).strip()
-                    # send worker node reduce task number, number of map tasks, number of reduce tasks, reducer function
-                    data.write_to_worker_queue.put(struct.pack('>Q', REDUCE_TASK) + struct.pack('>Q', task) + struct.pack('>Q', self.M) + struct.pack('>Q', self.R) + struct.pack('>Q', len(reducer_func_str)) + reducer_func_str.encode())
-                    self.in_progress_reduce_tasks[worker_addr] = task
-                    # send this new reduce worker the locations of previously completed map tasks
-                    for completed_map_task, map_worker_addr in self.completed_map_tasks_locations.items():
-                        data.write_to_worker_queue.put(struct.pack('>Q', REDUCE_LOCATION_INFO) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(map_worker_addr[0])) + map_worker_addr[0].encode() + struct.pack('>Q', map_worker_addr[1]))
-                elif self.completed_tasks < self.M + self.R: # no tasks currently available
-                    data.write_to_worker_queue.put(struct.pack('>Q', NO_AVAILABLE_TASK))
-                elif self.completed_tasks == self.M + self.R: # all tasks completed
-                    data.write_to_worker_queue.put(struct.pack('>Q', ALL_TASKS_COMPLETE))
-            elif opcode == MAP_COMPLETE: # worker node has completed a map task
-                # update internal master node state tracking completed tasks and their locations
-                completed_map_task = self.in_progress_map_tasks.pop(worker_addr)
-                print(f"Master node received completed map task {completed_map_task} from worker node at {worker_addr}")
-                self.completed_map_tasks[worker_addr].append(completed_map_task)
-                worker_listening_port = struct.unpack('>Q', self._recvall(sock, 8))[0]
-                self.completed_map_tasks_locations[completed_map_task] = (worker_addr[0], worker_listening_port)
-                self.completed_tasks += 1
-                msg = struct.pack('>Q', REDUCE_LOCATION_INFO) + struct.pack('>Q', completed_map_task) + struct.pack('>Q', len(worker_addr[0])) + worker_addr[0].encode() + struct.pack('>Q', worker_listening_port)
-                # send workers currently working on reduce task the location of this map task's results
-                for reduce_worker_addr in self.in_progress_reduce_tasks:
-                    self.bytes_sent += len(msg)
-                    self.worker_connections[reduce_worker_addr].sendall(msg)
-            elif opcode == REDUCE_COMPLETE: # worker node has completed a reduce task
-                completed_reduce_task = self.in_progress_reduce_tasks.pop(worker_addr)
-                print(f"Master node received completed reduce task {completed_reduce_task} from worker node at {worker_addr}")
-                self.completed_tasks += 1
-                if self.completed_tasks == self.M + self.R: # all tasks completed
-                    for conn in self.worker_connections.values(): # tell all worker nodes to terminate
-                        conn.sendall(struct.pack('>Q', ALL_TASKS_COMPLETE))
-                        self.bytes_sent += 8
-                        self.sel.unregister(conn)
-                        conn.close()
-                    done = True # tell master.run to terminate
+        
 
-        if mask & selectors.EVENT_WRITE: # worker node is ready to receive data
-            if not data.write_to_worker_queue.empty(): 
-                msg = data.write_to_worker_queue.get()
-                sock.sendall(msg) # send data to worker node
-                self.bytes_sent += len(msg)
-
-        return done # return whether master.run should terminate / whether all tasks are done
-
-    def _recvall(self, sock, n): # receives exactly n bytes from socket, returning None if connection broken
-        data = bytearray() 
-        while len(data) < n: 
-            try: 
-                packet = sock.recv(min(4096, n - len(data))) # call sock.recv with up to 4096 bytes at a time for efficiency
-                if not packet:
-                    return None 
-            except ConnectionResetError: 
-                return None
-            data.extend(packet)
-        self.bytes_received += n
-        return data 
-
-    
-# Sockets and network buffers behave differently on macOS compared to Linux
-# This code modifies sock.sendall to not immediately error when the network buffer is full but instead wait a bit and try again
-if "darwin" == sys.platform: 
-    def socket_socket_sendall(self, data):
-        while len(data) > 0:
-            try:
-                bytes_sent = self.send(data)
-                data = data[bytes_sent:]
-            except socket.error as e:
-                if e.errno == errno.EAGAIN:
-                    time.sleep(0.1)
-                else:
-                    raise e
-    socket.socket.sendall = socket_socket_sendall
+        mock_unpack.return_value = (constants.REDUCE_COMPLETE)
+        
+if __name__ == '__main__':
+    unittest.main()
