@@ -1,5 +1,5 @@
 # Introduction
-This is a MapReduce Python system/library. The newest version of our code can be found in the new folder.
+This is a MapReduce Python system/library. The newest version of our code can be found in the "new" folder on the main branch.
 
 # Requirements
 Install the latest version of Python and the dill module (an extension of Python's pickle module) via pip install dill.
@@ -20,7 +20,7 @@ The newest version of our MapReduce system/library lies in the new folder. From 
 As mentioned above, the input files must be in the same directory as user.py, and must be in the format mr-input-X.txt (utf-8 encoded) for X ranging from 1 to M, where M is the number of map splits defined in user.py. The output files will be text files found on each of the reduce worker machines, labeled mr-output-Y.txt for Y ranging from 1 to R, where R is the number of reduce partitions defined in user.py.
 
 # Testing 
-Unit tests are included in tests.py, in the branch called "testing". For manual integration and end-to-end testing, specifically for fault tolerance, it is useful to programatically crash worker nodes. This can be done when each worker node is initially started: python worker.py die_map makes that specific worker die during a map task, while python worker.py die_reduce makes that worker die during a reduce task. The master and worker node logs can then be examined to see if the appropriate fault tolerance features are activated (e.g., reassigning tasks of the dead worker node).
+Unit tests are included in tests.py, in the new/test.py file on the branch called "testing". For manual integration and end-to-end testing, specifically for fault tolerance, it is useful to programatically crash worker nodes. This can be done when each worker node is initially started: python worker.py die_map makes that specific worker die during a map task, while python worker.py die_reduce makes that worker die during a reduce task. The master and worker node logs can then be examined to see if the appropriate fault tolerance features are activated (e.g., reassigning tasks of the dead worker node).
 
 # Final Write-up and Engineering Notebook
 For more clarity on design and more discussion on our MapReduce system, see the final write-up
