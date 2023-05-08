@@ -22,6 +22,6 @@ MAP_RESULTS = 12 # worker sends the results of a map task to another worker, sen
 
 
 # General constants
-MASTER_HOST = "10.250.21.115" # this must be set to the user's computer's IP address
+MASTER_HOST = "10.250.124.104" # this must be set to the user's computer's IP address
 MASTER_PORT = 12355 # the port on which the master node listens for connections
 INITIAL_DELAY = False # whether to delay assigning tasks in master node for 10 seconds to allow all workers to connect first, for testing purposes only

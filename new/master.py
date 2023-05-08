@@ -42,7 +42,7 @@ class MRJob:
         return
     
     # Main thread of master node: sets up listening socket and communicates with worker nodes
-    def run(self): 
+    def run(self, testing=False): 
         self.lsock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # listening socket, through which workers connect to master
         self.lsock.bind((MASTER_HOST, MASTER_PORT)) # run master node on user machine
         self.lsock.listen() 
@@ -51,20 +51,20 @@ class MRJob:
 
         self.sel = selectors.DefaultSelector() # selector for listening socket and worker sockets
         self.sel.register(self.lsock, selectors.EVENT_READ, data=None) 
-
-        while True: 
-            events = self.sel.select(timeout=None)
-            for key, mask in events:
-                if key.data is None: 
-                    self.accept_worker_connection() # accept new worker connection
-                else: 
-                    if self.initial_delay:
-                        time.sleep(10) # delay initial assigning of tasks for 10 seconds to allow all workers to connect first
-                        self.initial_delay = False
-                    done = self.service_worker_connection(key, mask) # service existing worker connection
-                    if done:
-                        print(f"Master node received {self.bytes_received} bytes total and sent {self.bytes_sent} bytes total over the network.")
-                        return # exit out of master.run() if all tasks are complete, returning control to user program
+        if not testing: 
+            while True: 
+                events = self.sel.select(timeout=None)
+                for key, mask in events:
+                    if key.data is None: 
+                        self.accept_worker_connection() # accept new worker connection
+                    else: 
+                        if self.initial_delay:
+                            time.sleep(10) # delay initial assigning of tasks for 10 seconds to allow all workers to connect first
+                            self.initial_delay = False
+                        done = self.service_worker_connection(key, mask) # service existing worker connection
+                        if done:
+                            print(f"Master node received {self.bytes_received} bytes total and sent {self.bytes_sent} bytes total over the network.")
+                            return # exit out of master.run() if all tasks are complete, returning control to user program
 
     # Accept a new, incoming worker connection to the master node's listening socket
     def accept_worker_connection(self): 
